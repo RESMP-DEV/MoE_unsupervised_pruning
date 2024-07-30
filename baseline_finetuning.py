@@ -61,7 +61,7 @@ if __name__ == "__main__":
         task_type=TaskType.CAUSAL_LM
     )
 
-    # model = get_peft_model(model, peft_config)
+    model = get_peft_model(model, peft_config)
     # for name, param in model.named_parameters():
     #     print(f"Parameter Name: {name} | Size: {param.size()} | Type: {param.data.dtype} | Trainable: {param.requires_grad} \n")
 
