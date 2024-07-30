@@ -5,7 +5,7 @@ import torch
 from peft import LoraConfig, TaskType, get_peft_model
 from trl import SFTTrainer
 
-from data_utils import dataset_local_load, dataset_map_to_instruction_format
+from data_utils import dataset_local_load, dataset_map_merge
 
 
 def load_model():
@@ -37,8 +37,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     train_dataset_map, valid_dataset_map = dataset_local_load(args.dataset_dir)
-    train_dataset = dataset_map_to_instruction_format(train_dataset_map)
-    valid_dataset = dataset_map_to_instruction_format(valid_dataset_map)
+    train_dataset = dataset_map_merge(train_dataset_map)
+    valid_dataset = dataset_map_merge(valid_dataset_map)
     print("data loaded.")
     print(f"Training dataset size: {len(train_dataset)}")
     print(f"Validation dataset size: {len(valid_dataset)}")
@@ -64,7 +64,7 @@ if __name__ == "__main__":
         task_type=TaskType.CAUSAL_LM
     )
 
-    model = get_peft_model(model, peft_config)
+    # model = get_peft_model(model, peft_config)
     # for name, param in model.named_parameters():
     #     print(f"Parameter Name: {name} | Size: {param.size()} | Type: {param.data.dtype} | Trainable: {param.requires_grad} \n")
 
@@ -74,6 +74,7 @@ if __name__ == "__main__":
         per_device_train_batch_size=1,
         gradient_accumulation_steps=2,
         gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
         optim="paged_adamw_32bit",
         save_steps=1000,
         eval_steps=200,

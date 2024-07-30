@@ -78,7 +78,7 @@ def dataset_local_load(dataset_dir_path):
     return train_dataset_map, valid_dataset_map
 
 
-def dataset_map_to_instruction_format(dataset_map):
+def dataset_map_merge(dataset_map):
     dataset_df = pd.DataFrame()
     for i, (k, v) in enumerate(dataset_map.items()):
         if i == 0:
@@ -104,5 +104,5 @@ if __name__ == "__main__":
     # train_valid_split_and_sample(dataset_dir, train_length, valid_length)
 
     train_dataset_map, valid_dataset_map = dataset_local_load(dataset_dir)
-    train_dataset = dataset_map_to_instruction_format(train_dataset_map)
-    valid_dataset = dataset_map_to_instruction_format(valid_dataset_map)
+    train_dataset = dataset_map_merge(train_dataset_map)
+    valid_dataset = dataset_map_merge(valid_dataset_map)
