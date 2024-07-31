@@ -402,7 +402,6 @@ class MoEGate(nn.Module):
         self.alpha = config.aux_loss_alpha
         self.seq_aux = config.seq_aux
         self.topk_method = config.topk_method
-        self.topk_method_config = config.topk_method_config
         self.n_group = config.n_group
         self.topk_group = config.topk_group
 
