@@ -57,6 +57,7 @@ from transformers.utils.import_utils import is_torch_fx_available
 from .configuration_deepseek import DeepseekV2Config
 import torch.distributed as dist
 import numpy as np
+from sklearn.cluster import KMeans
 
 if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
@@ -401,6 +402,7 @@ class MoEGate(nn.Module):
         self.alpha = config.aux_loss_alpha
         self.seq_aux = config.seq_aux
         self.topk_method = config.topk_method
+        self.topk_method_config = config.topk_method_config
         self.n_group = config.n_group
         self.topk_group = config.topk_group
 
@@ -470,6 +472,22 @@ class MoEGate(nn.Module):
                 scores, k=self.n_routed_experts - deleted_expert_num - self.top_k, dim=-1, sorted=False
             )
             expert_mask = torch.zeros_like(expert_mask).scatter_(0, topk_idx, 1)
+        # elif self.topk_method == "kmeans_cluster_fusion":
+        #     kmeans = KMeans(n_clusters=self.top_k, random_state=0).fit(hidden_states.T)
+        #     cluster_label = torch.tensor(kmeans.labels_)
+        #
+        #     for i in range(self.top_k):
+        #         cluster_scores = scores.masked_fill(cluster_label != i, 0.0)
+        #         if i == 0:
+        #             topk_weight, topk_idx = torch.topk(
+        #                 cluster_scores, k=int((cluster_label == i).sum()) - 1, dim=-1, sorted=False
+        #             )
+        #         else:
+        #             new_topk_weight, new_topk_idx = torch.topk(
+        #                 cluster_scores, k=int((cluster_label == i).sum()) - 1, dim=-1, sorted=False
+        #             )
+        #             topk_weight = torch.cat([topk_weight, new_topk_weight], axis=0)
+        #             topk_idx = torch.cat([topk_idx, new_topk_idx], axis=0)
 
         ### norm gate to sum 1
         if self.top_k > 1 and self.norm_topk_prob:
@@ -1567,7 +1585,9 @@ class DeepseekV2Model(DeepseekV2PreTrainedModel):
 
             if expert_mask is not None:
                 activated_expert = int(expert_mask.sum())
-                print(f"layer_idx: {idx}, activated expert: {activated_expert}")
+            else:
+                activated_expert = "full"
+            print(f"layer_idx: {idx}, activated expert: {activated_expert}")
 
             hidden_states = layer_outputs[0]
 
