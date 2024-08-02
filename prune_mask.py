@@ -9,9 +9,7 @@ from data_utils import dataset_local_load
 
 
 def calibration_generation(dataset_dir, dataset_name, sample_number=50):
-    dataset_dir = "dataset"
     train_dataset_map, valid_dataset_map = dataset_local_load(dataset_dir)
-    dataset_name = "MathInstruct"
     train_dataset = train_dataset_map[dataset_name]
     train_df = pd.DataFrame(train_dataset)
     train_df = train_df.sample(n=sample_number, random_state=1, axis=0)
