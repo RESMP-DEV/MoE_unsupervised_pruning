@@ -15,23 +15,24 @@ def calibration_generation(dataset_dir, dataset_name, sample_number=50):
     train_df = train_df.sample(n=sample_number, random_state=1, axis=0)
     return train_df
 
+
 class PreTrainedDeepseekV2PrunerByDomain:
     def __init__(self, model, calibration_data):
         self.model = model.model
-        self.tokenizer = model.tokenizer
+        self.tokenizer = tokenizer
         self.unsupervised_method = KMeans(n_clusters=model.config.num_experts_per_tok, random_state=0)
         self.calibration_data = calibration_data
 
-        self.generate_unsupervised_map()
-        self.generate_pruned_map()
-
     def generate_unsupervised_map(self):
+        print("unsupervising...")
         prompt = list(self.calibration_data["prompt"])
-        # completion = list(self.calibration_data["completion"])
-        inputs = self.tokenizer(prompt, return_tensors='pt', padding=True, truncation=True)
+        completion = list(self.calibration_data["completion"])
+        inputs = self.tokenizer(prompt, completion, return_tensors='pt', max_length=128, padding=True, truncation=True)
         input_ids = inputs['input_ids']
         attention_mask = inputs['attention_mask']
-        output = self.model(input_ids, attention_mask)
+        output = self.model(input_ids, attention_mask, output_hidden_states=True, pre_ffn_hidden=True)
+        print("feed forward finish.")
+
         pre_ffn_hidden_states = output.pre_ffn_hidden_states
         assert len(pre_ffn_hidden_states) == len(self.model.layers)
 
@@ -43,21 +44,24 @@ class PreTrainedDeepseekV2PrunerByDomain:
             score_weight = self.model.layers[idx].mlp.gate.weight
             scores = F.linear(hidden_state.type(torch.float32), score_weight.type(torch.float32), None)
             scores = scores.softmax(dim=-1, dtype=torch.float32).sum(0).sum(0).tolist()
+            print(f"layer {idx} feed forward finish.")
 
             experts = self.model.layers[idx].mlp.experts
             experts_output = []
             for expert in experts:
                 basic_output = expert(hidden_state).sum(1).flatten().type(torch.float16)
                 experts_output.append(basic_output)
+            print(f"layer {idx} expert forward finish.")
 
             experts_output = torch.stack(experts_output)
             kmeans_result = self.unsupervised_method.fit(experts_output.detach().numpy())
             cluster_label = kmeans_result.labels_.tolist()
             assert len(cluster_label) == self.model.config.n_routed_experts
 
-            self.unsupervised_map[idx] = [[cluster_label[i], scores[i]] for i in range(len(cluster_label))]
+            self.unsupervised_map[idx] = {cluster_label[i]: scores[i] for i in range(len(cluster_label))}
 
     def generate_pruned_map(self, prune_rate=0.5):
+        print("pruning...")
         if self.unsupervised_map is None:
             raise ValueError("No existed unsupervised map.")
         self.pruned_map = {}
@@ -71,7 +75,8 @@ class PreTrainedDeepseekV2PrunerByDomain:
             for cluster_label, cluster_info in new_map.items():
                 cluster_length = len(cluster_info)
                 if cluster_length > 1:
-                    cluster_pruned_info = sorted(cluster_info.items(), key=lambda x: x[1])[:int(prune_rate * cluster_length)]
+                    cluster_pruned_info = sorted(cluster_info.items(), key=lambda x: x[1])[
+                                          :int(prune_rate * cluster_length)]
                     if layer_idx not in self.pruned_map:
                         self.pruned_map[layer_idx] = []
                     self.pruned_map[layer_idx] += [info[0] for info in cluster_pruned_info]
@@ -94,3 +99,5 @@ if __name__ == "__main__":
         save_file_path = f"{dataset_name}_pruning.json"
         with open(save_file_path, 'w') as f:
             json.dump(pruner.pruned_map, f)
+
+        print(f"pruned map saved to {save_file_path}")
