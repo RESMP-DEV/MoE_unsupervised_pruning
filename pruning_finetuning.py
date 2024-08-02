@@ -1,6 +1,6 @@
 import argparse
 import os
-from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, TrainingArguments
 import torch
 from peft import LoraConfig, TaskType, get_peft_model
 from trl import SFTTrainer
@@ -10,14 +10,17 @@ from data_utils import dataset_local_load, dataset_map_merge
 
 def load_model():
     print(f"model id or path: {args.model_path}")
+    config = AutoConfig.from_pretrained(args.model_path)
+    config.num_experts_per_tok = 2
+    config.moe_layer_freq = 2
+    config.topk_method = "expert_hierarchical_delete"
+
     llm = AutoModelForCausalLM.from_pretrained(
         args.model_path,
+        config=config,
         device_map="auto",
-        trust_remote_code=True
+        trust_remote_code=True,
     )
-    llm.config.num_experts_per_tok = 2
-    llm.config.moe_layer_freq = 2
-    llm.config.topk_method = "expert_hierarchical_delete"
 
     print("=================model params=================")
     for k, v in llm.config.__dict__.items():
@@ -25,7 +28,6 @@ def load_model():
     print("=================model params end=================")
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
-    tokenizer.padding_side = 'right'
     return llm, tokenizer
 
 
@@ -82,7 +84,7 @@ if __name__ == "__main__":
         learning_rate=1e-5,
         weight_decay=0.001,
         warmup_ratio=0.03,
-        lr_scheduler_type="linear"
+        lr_scheduler_type="linear",
     )
 
     trainer = SFTTrainer(
@@ -91,7 +93,7 @@ if __name__ == "__main__":
         eval_dataset=valid_dataset,
         max_seq_length=2048,
         tokenizer=tokenizer,
-        args=train_args
+        args=train_args,
     )
 
     print("training...")

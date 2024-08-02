@@ -37,8 +37,11 @@ from transformers.modeling_attn_mask_utils import (
 )
 from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
+    BaseModelOutputWithPastAndPreFFNHidden,
     CausalLMOutputWithPast,
+    CausalLMOutputWithPastAndPreFFNHidden,
     SequenceClassifierOutputWithPast,
+    SequenceClassifierOutputWithPastAndPreFFNHidden,
 )
 from transformers.modeling_utils import PreTrainedModel
 from transformers.pytorch_utils import (
@@ -90,7 +93,6 @@ def _get_unpad_data(attention_mask):
         cu_seqlens,
         max_seqlen_in_batch,
     )
-
 
 class DeepseekV2RMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
@@ -418,7 +420,7 @@ class MoEGate(nn.Module):
 
         init.kaiming_uniform_(self.weight, a=math.sqrt(5))
 
-    def forward(self, hidden_states, expert_mask=None):
+    def forward(self, hidden_states):
         bsz, seq_len, h = hidden_states.shape
         ### compute gating score
         hidden_states = hidden_states.view(-1, h)
@@ -459,18 +461,6 @@ class MoEGate(nn.Module):
             topk_weight, topk_idx = torch.topk(
                 tmp_scores, k=self.top_k, dim=-1, sorted=False
             )
-        elif self.topk_method == "expert_hierarchical_delete":
-            if expert_mask is None:
-                expert_mask = torch.ones(self.n_routed_experts, device=hidden_states.device)
-            deleted_expert_num = self.n_routed_experts - int(expert_mask.sum())
-            if deleted_expert_num >= self.n_routed_experts:
-                raise ValueError("All experts have been deleted.")
-
-            scores = scores.masked_fill(~expert_mask.bool(), 0.0)
-            topk_weight, topk_idx = torch.topk(
-                scores, k=self.n_routed_experts - deleted_expert_num - self.top_k, dim=-1, sorted=False
-            )
-            expert_mask = torch.zeros_like(expert_mask).scatter_(0, topk_idx, 1)
         # elif self.topk_method == "kmeans_cluster_fusion":
         #     kmeans = KMeans(n_clusters=self.top_k, random_state=0).fit(hidden_states.T)
         #     cluster_label = torch.tensor(kmeans.labels_)
@@ -479,11 +469,11 @@ class MoEGate(nn.Module):
         #         cluster_scores = scores.masked_fill(cluster_label != i, 0.0)
         #         if i == 0:
         #             topk_weight, topk_idx = torch.topk(
-        #                 cluster_scores, k=int((cluster_label == i).sum()) - 1, dim=-1, sorted=False
+        #                 cluster_scores, k=1, dim=-1, sorted=False
         #             )
         #         else:
         #             new_topk_weight, new_topk_idx = torch.topk(
-        #                 cluster_scores, k=int((cluster_label == i).sum()) - 1, dim=-1, sorted=False
+        #                 cluster_scores, k=1, dim=-1, sorted=False
         #             )
         #             topk_weight = torch.cat([topk_weight, new_topk_weight], axis=0)
         #             topk_idx = torch.cat([topk_idx, new_topk_idx], axis=0)
@@ -523,7 +513,7 @@ class MoEGate(nn.Module):
                 aux_loss = (Pi * fi).sum() * self.alpha
         else:
             aux_loss = None
-        return topk_idx, topk_weight, aux_loss, expert_mask
+        return topk_idx, topk_weight, aux_loss
 
 
 class AddAuxiliaryLoss(torch.autograd.Function):
@@ -592,10 +582,10 @@ class DeepseekV2MoE(nn.Module):
                 config=config, intermediate_size=intermediate_size
             )
 
-    def forward(self, hidden_states, expert_mask=None):
+    def forward(self, hidden_states):
         identity = hidden_states
         orig_shape = hidden_states.shape
-        topk_idx, topk_weight, aux_loss, expert_mask = self.gate(hidden_states, expert_mask)
+        topk_idx, topk_weight, aux_loss = self.gate(hidden_states)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
         flat_topk_idx = topk_idx.view(-1)
         if self.training:
@@ -612,7 +602,7 @@ class DeepseekV2MoE(nn.Module):
             y = self.moe_infer(hidden_states, topk_idx, topk_weight).view(*orig_shape)
         if self.config.n_shared_experts is not None:
             y = y + self.shared_experts(identity)
-        return y, expert_mask
+        return y
 
     @torch.no_grad()
     def moe_infer(self, x, topk_ids, topk_weight):
@@ -1223,6 +1213,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
+        self.layer_idx = layer_idx
 
         self.self_attn = ATTENTION_CLASSES[config._attn_implementation](
             config=config, layer_idx=layer_idx
@@ -1247,15 +1238,15 @@ class DeepseekV2DecoderLayer(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        expert_mask: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
+        pre_ffn_hidden: Optional[bool] = False,
         **kwargs,
     ) -> Tuple[
-        torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]
+        torch.FloatTensor, Optional[torch.FloatTensor], Optional[torch.FloatTensor], Optional[torch.FloatTensor]
     ]:
         """
         Args:
@@ -1294,11 +1285,9 @@ class DeepseekV2DecoderLayer(nn.Module):
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
+        pre_ffn_hidden_states = hidden_states
 
-        if isinstance(self.mlp, DeepseekV2MoE):
-            hidden_states, expert_mask = self.mlp(hidden_states, expert_mask)
-        else:
-            hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
@@ -1309,7 +1298,10 @@ class DeepseekV2DecoderLayer(nn.Module):
         if use_cache:
             outputs += (present_key_value,)
 
-        return outputs, expert_mask
+        if pre_ffn_hidden:
+            outputs += (pre_ffn_hidden_states,)
+
+        return outputs
 
 
 DeepseekV2_START_DOCSTRING = r"""
@@ -1474,6 +1466,7 @@ class DeepseekV2Model(DeepseekV2PreTrainedModel):
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
+        pre_ffn_hidden: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = (
@@ -1485,6 +1478,11 @@ class DeepseekV2Model(DeepseekV2PreTrainedModel):
             output_hidden_states
             if output_hidden_states is not None
             else self.config.output_hidden_states
+        )
+        pre_ffn_hidden = (
+            pre_ffn_hidden
+            if pre_ffn_hidden is not None
+            else self.config.pre_ffn_hidden
         )
         use_cache = use_cache if use_cache is not None else self.config.use_cache
 
@@ -1553,48 +1551,45 @@ class DeepseekV2Model(DeepseekV2PreTrainedModel):
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
+        all_pre_ffn_hiddens = () if pre_ffn_hidden else None
         next_decoder_cache = None
-        expert_mask = None
 
         for idx, decoder_layer in enumerate(self.layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
             if self.gradient_checkpointing and self.training:
-                layer_outputs, expert_mask = self._gradient_checkpointing_func(
+                layer_outputs = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
                     hidden_states,
-                    expert_mask,
                     attention_mask,
                     position_ids,
                     past_key_values,
                     output_attentions,
+                    pre_ffn_hidden,
                     use_cache,
                 )
             else:
-                layer_outputs, expert_mask = decoder_layer(
+                layer_outputs = decoder_layer(
                     hidden_states,
-                    expert_mask,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
                     past_key_value=past_key_values,
                     output_attentions=output_attentions,
+                    pre_ffn_hidden=pre_ffn_hidden,
                     use_cache=use_cache,
                 )
 
-            if expert_mask is not None:
-                activated_expert = int(expert_mask.sum())
-            else:
-                activated_expert = "full"
-            print(f"layer_idx: {idx}, activated expert: {activated_expert}")
-
             hidden_states = layer_outputs[0]
+
+            if output_attentions:
+                all_self_attns += (layer_outputs[1],)
 
             if use_cache:
                 next_decoder_cache = layer_outputs[2 if output_attentions else 1]
 
-            if output_attentions:
-                all_self_attns += (layer_outputs[1],)
+            if pre_ffn_hidden:
+                all_pre_ffn_hiddens += (layer_outputs[-1],)
 
         hidden_states = self.norm(hidden_states)
 
@@ -1612,14 +1607,15 @@ class DeepseekV2Model(DeepseekV2PreTrainedModel):
         if not return_dict:
             return tuple(
                 v
-                for v in [hidden_states, next_cache, all_hidden_states, all_self_attns]
+                for v in [hidden_states, next_cache, all_hidden_states, all_self_attns, all_pre_ffn_hiddens]
                 if v is not None
             )
-        return BaseModelOutputWithPast(
+        return BaseModelOutputWithPastAndPreFFNHidden(
             last_hidden_state=hidden_states,
             past_key_values=next_cache,
             hidden_states=all_hidden_states,
             attentions=all_self_attns,
+            pre_ffn_hidden_states=all_pre_ffn_hiddens,
         )
 
 
@@ -1668,6 +1664,7 @@ class DeepseekV2ForCausalLM(DeepseekV2PreTrainedModel):
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
+        pre_ffn_hidden: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
@@ -1719,6 +1716,7 @@ class DeepseekV2ForCausalLM(DeepseekV2PreTrainedModel):
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
+            pre_ffn_hidden=pre_ffn_hidden,
             return_dict=return_dict,
         )
 
@@ -1743,12 +1741,13 @@ class DeepseekV2ForCausalLM(DeepseekV2PreTrainedModel):
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
 
-        return CausalLMOutputWithPast(
+        return CausalLMOutputWithPastAndPreFFNHidden(
             loss=loss,
             logits=logits,
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
+            pre_ffn_hidden_states=outputs.all_pre_ffn_hiddens,
         )
 
     def prepare_inputs_for_generation(
@@ -1951,10 +1950,11 @@ class DeepseekV2ForSequenceClassification(DeepseekV2PreTrainedModel):
             output = (pooled_logits,) + transformer_outputs[1:]
             return ((loss,) + output) if loss is not None else output
 
-        return SequenceClassifierOutputWithPast(
+        return SequenceClassifierOutputWithPastAndPreFFNHidden(
             loss=loss,
             logits=pooled_logits,
             past_key_values=transformer_outputs.past_key_values,
             hidden_states=transformer_outputs.hidden_states,
             attentions=transformer_outputs.attentions,
+            pre_ffn_hidden_states=transformer_outputs.all_pre_ffn_hiddens,
         )
