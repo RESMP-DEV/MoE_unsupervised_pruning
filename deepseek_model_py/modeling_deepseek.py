@@ -420,13 +420,17 @@ class MoEGate(nn.Module):
 
         init.kaiming_uniform_(self.weight, a=math.sqrt(5))
 
-    def forward(self, hidden_states):
+    def forward(self, hidden_states, layer_mask):
         bsz, seq_len, h = hidden_states.shape
         ### compute gating score
         hidden_states = hidden_states.view(-1, h)
         logits = F.linear(
             hidden_states.type(torch.float32), self.weight.type(torch.float32), None
         )
+        if layer_mask is not None:
+            mask = torch.zeros(logits.size(), dtype=torch.bool)
+            mask[:, layer_mask] = True
+            logits = logits.masked_fill(mask, float('-inf'))
         if self.scoring_func == "softmax":
             scores = logits.softmax(dim=-1, dtype=torch.float32)
         else:
@@ -582,10 +586,10 @@ class DeepseekV2MoE(nn.Module):
                 config=config, intermediate_size=intermediate_size
             )
 
-    def forward(self, hidden_states):
+    def forward(self, hidden_states, layer_mask):
         identity = hidden_states
         orig_shape = hidden_states.shape
-        topk_idx, topk_weight, aux_loss = self.gate(hidden_states)
+        topk_idx, topk_weight, aux_loss = self.gate(hidden_states, layer_mask)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
         flat_topk_idx = topk_idx.view(-1)
         if self.training:
@@ -1238,6 +1242,7 @@ class DeepseekV2DecoderLayer(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        layer_mask: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
@@ -1287,7 +1292,10 @@ class DeepseekV2DecoderLayer(nn.Module):
         hidden_states = self.post_attention_layernorm(hidden_states)
         pre_ffn_hidden_states = hidden_states
 
-        hidden_states = self.mlp(hidden_states)
+        if isinstance(self.mlp, DeepseekV2MoE):
+            hidden_states = self.mlp(hidden_states, layer_mask)
+        else:
+            hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
@@ -1446,6 +1454,7 @@ class DeepseekV2Model(DeepseekV2PreTrainedModel):
         self.norm = DeepseekV2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         self.gradient_checkpointing = False
+        self.pruned_mask = config.pruned_mask
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -1558,10 +1567,12 @@ class DeepseekV2Model(DeepseekV2PreTrainedModel):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
+            layer_mask = self.pruned_mask[idx] if idx in self.pruned_mask else None
             if self.gradient_checkpointing and self.training:
                 layer_outputs = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
                     hidden_states,
+                    layer_mask,
                     attention_mask,
                     position_ids,
                     past_key_values,
@@ -1572,6 +1583,7 @@ class DeepseekV2Model(DeepseekV2PreTrainedModel):
             else:
                 layer_outputs = decoder_layer(
                     hidden_states,
+                    layer_mask,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
                     past_key_value=past_key_values,

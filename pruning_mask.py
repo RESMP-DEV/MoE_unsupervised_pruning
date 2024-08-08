@@ -22,43 +22,49 @@ class PreTrainedDeepseekV2PrunerByDomain:
         self.tokenizer = tokenizer
         self.unsupervised_method = KMeans(n_clusters=model.config.num_experts_per_tok, random_state=0)
         self.calibration_data = calibration_data
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     def generate_unsupervised_map(self):
         print("unsupervising...")
         prompt = list(self.calibration_data["prompt"])
         completion = list(self.calibration_data["completion"])
         inputs = self.tokenizer(prompt, completion, return_tensors='pt', max_length=128, padding=True, truncation=True)
-        input_ids = inputs['input_ids']
-        attention_mask = inputs['attention_mask']
-        output = self.model(input_ids, attention_mask, output_hidden_states=True, pre_ffn_hidden=True)
-        print("feed forward finish.")
+        # data to device
+        self.model = self.model.to(self.device)
+        input_ids = inputs['input_ids'].to(self.device)
+        attention_mask = inputs['attention_mask'].to(self.device)
+        # inference and expert score compute
+        with self.model.eval():
+            # inference
+            output = self.model(input_ids, attention_mask, output_hidden_states=True, pre_ffn_hidden=True)
+            print("feed forward finish.")
+            # param check
+            pre_ffn_hidden_states = output.pre_ffn_hidden_states
+            assert len(pre_ffn_hidden_states) == len(self.model.layers)
+            # expert score compute
+            self.unsupervised_map = {}
+            for idx, hidden_state in enumerate(pre_ffn_hidden_states):
+                if "DeepseekV2MLP" in str(type(self.model.layers[idx].mlp)):
+                    continue
 
-        pre_ffn_hidden_states = output.pre_ffn_hidden_states
-        assert len(pre_ffn_hidden_states) == len(self.model.layers)
+                score_weight = self.model.layers[idx].mlp.gate.weight
+                scores = F.linear(hidden_state.type(torch.float32), score_weight.type(torch.float32), None)
+                scores = scores.softmax(dim=-1, dtype=torch.float32).sum(0).sum(0).tolist()
+                print(f"layer {idx} feed forward finish.")
 
-        self.unsupervised_map = {}
-        for idx, hidden_state in enumerate(pre_ffn_hidden_states):
-            if "DeepseekV2MLP" in str(type(self.model.layers[idx].mlp)):
-                continue
+                experts = self.model.layers[idx].mlp.experts
+                experts_output = []
+                for expert in experts:
+                    basic_output = expert(hidden_state).sum(1).flatten().type(torch.float16)
+                    experts_output.append(basic_output)
+                print(f"layer {idx} expert forward finish.")
 
-            score_weight = self.model.layers[idx].mlp.gate.weight
-            scores = F.linear(hidden_state.type(torch.float32), score_weight.type(torch.float32), None)
-            scores = scores.softmax(dim=-1, dtype=torch.float32).sum(0).sum(0).tolist()
-            print(f"layer {idx} feed forward finish.")
+                experts_output = torch.stack(experts_output)
+                kmeans_result = self.unsupervised_method.fit(experts_output.detach().numpy())
+                cluster_label = kmeans_result.labels_.tolist()
+                assert len(cluster_label) == self.model.config.n_routed_experts
 
-            experts = self.model.layers[idx].mlp.experts
-            experts_output = []
-            for expert in experts:
-                basic_output = expert(hidden_state).sum(1).flatten().type(torch.float16)
-                experts_output.append(basic_output)
-            print(f"layer {idx} expert forward finish.")
-
-            experts_output = torch.stack(experts_output)
-            kmeans_result = self.unsupervised_method.fit(experts_output.detach().numpy())
-            cluster_label = kmeans_result.labels_.tolist()
-            assert len(cluster_label) == self.model.config.n_routed_experts
-
-            self.unsupervised_map[idx] = {cluster_label[i]: scores[i] for i in range(len(cluster_label))}
+                self.unsupervised_map[idx] = {cluster_label[i]: scores[i] for i in range(len(cluster_label))}
 
     def generate_pruned_map(self, prune_rate=0.5):
         print("pruning...")
@@ -96,7 +102,7 @@ if __name__ == "__main__":
         pruner.generate_unsupervised_map()
         pruner.generate_pruned_map()
 
-        save_file_path = f"{dataset_name}_pruning.json"
+        save_file_path = f"pruned_result/{dataset_name}_pruning.json"
         with open(save_file_path, 'w') as f:
             json.dump(pruner.pruned_map, f)
 

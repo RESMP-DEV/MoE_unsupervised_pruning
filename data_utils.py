@@ -4,14 +4,18 @@ import random
 import pandas as pd
 from datasets import Dataset, load_dataset
 
+FIELD_DICT = {
+    "MathInstruct": "math", "finance_alpaca": "finance", "code_alpaca_20k": "coding"
+}
+
 PROMPT_DICT = {
     "prompt_input": (
-        "Below is an instruction that describes a task, paired with an input that provides further context. "
+        "Below is an instruction that describes a task in the field of {field}, paired with an input that provides further context. "
         "Write a response that appropriately completes the request.\n\n"
         "### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n### Response:"
     ),
     "prompt_no_input": (
-        "Below is an instruction that describes a task. "
+        "Below is an instruction that describes a task in the field of {field}. "
         "Write a response that appropriately completes the request.\n\n"
         "### Instruction:\n{instruction}\n\n### Response:"
     ),
@@ -45,7 +49,8 @@ def train_valid_split_and_sample(dataset_dir_path, train_length, valid_length):
                 json.dump(valid_sample, f)
 
 
-def format_parse(message_map):
+def format_parse(message_map, dataset_name):
+    message_map["field"] = FIELD_DICT[dataset_name]
     if "input" in message_map and message_map["input"] != "":
         prompt = PROMPT_DICT["prompt_input"]
     else:
@@ -62,7 +67,7 @@ def dataset_local_load(dataset_dir_path):
             dataset_name = file_name.split("_train")[0]
             with open(file_name_path, "r") as f:
                 dataset_list = json.load(f)
-                dataset_list = list(map(format_parse, dataset_list))
+                dataset_list = [format_parse(data, dataset_name) for data in dataset_list]
             train_dataset_map[dataset_name] = dataset_list
 
     valid_dataset_map = {}
@@ -72,7 +77,7 @@ def dataset_local_load(dataset_dir_path):
             dataset_name = file_name.split("_valid")[0]
             with open(file_name_path, "r") as f:
                 dataset_list = json.load(f)
-                dataset_list = list(map(format_parse, dataset_list))
+                dataset_list = [format_parse(data, dataset_name) for data in dataset_list]
             valid_dataset_map[dataset_name] = dataset_list
 
     return train_dataset_map, valid_dataset_map

@@ -1,19 +1,18 @@
 import argparse
 import os
+import json
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, TrainingArguments
 import torch
-from peft import LoraConfig, TaskType, get_peft_model
+from peft import LoraConfig, TaskType, get_peft_model, PeftModel
 from trl import SFTTrainer
 
 from data_utils import dataset_local_load, dataset_map_merge
 
 
-def load_model():
+def load_model(pruned_mask):
     print(f"model id or path: {args.model_path}")
     config = AutoConfig.from_pretrained(args.model_path)
-    config.num_experts_per_tok = 2
-    config.moe_layer_freq = 2
-    config.topk_method = "expert_hierarchical_delete"
+    config.pruned_mask = pruned_mask
 
     llm = AutoModelForCausalLM.from_pretrained(
         args.model_path,
@@ -45,9 +44,6 @@ if __name__ == "__main__":
     print(f"Training dataset size: {len(train_dataset)}")
     print(f"Validation dataset size: {len(valid_dataset)}")
 
-    model, tokenizer = load_model()
-    print("model loaded.")
-
     peft_config = LoraConfig(
         r=64,
         lora_alpha=16,
@@ -57,49 +53,67 @@ if __name__ == "__main__":
             "k_proj",
             "v_proj",
             "o_proj",
-            # "gate_proj",
-            # "up_proj",
-            # "down_proj",
-            # "lm_head",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+            "lm_head",
         ],
         bias="none",
         task_type=TaskType.CAUSAL_LM
     )
 
-    model = get_peft_model(model, peft_config)
-    # for name, param in model.named_parameters():
-    #     print(f"Parameter Name: {name} | Size: {param.size()} | Type: {param.data.dtype} | Trainable: {param.requires_grad} \n")
+    trained_dataset = []
+    for dataset_name in train_dataset_map:
+        pruning_file_path = f"pruned_result/{dataset_name}_pruning.json"
+        with open(pruning_file_path, "r") as f:
+            pruned_mask = json.load(f)
 
-    train_args = TrainingArguments(
-        args.output_dir,
-        num_train_epochs=1,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=2,
-        gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
-        optim="paged_adamw_32bit",
-        save_steps=1000,
-        eval_steps=200,
-        logging_steps=200,
-        learning_rate=1e-5,
-        weight_decay=0.001,
-        warmup_ratio=0.03,
-        lr_scheduler_type="linear",
-    )
+        model, tokenizer = load_model(pruned_mask)
+        print(f"{dataset_name} prune-masked model loaded.")
 
-    trainer = SFTTrainer(
-        model=model,
-        train_dataset=train_dataset,
-        eval_dataset=valid_dataset,
-        max_seq_length=2048,
-        tokenizer=tokenizer,
-        args=train_args,
-    )
+        if len(trained_dataset) != 0:
+            peft_model_path = os.path.join(args.output_dir, "_".join(trained_dataset))
+            model = PeftModel.from_pretrained(model, peft_model_path)
+        else:
+            model = get_peft_model(model, peft_config)
 
-    print("training...")
-    trainer.train()
-    print("training end.")
-    trainer.save_model(args.output_dir)
+        # for name, param in model.named_parameters():
+        #     print(f"Parameter Name: {name} | Size: {param.size()} | Type: {param.data.dtype} | Trainable: {param.requires_grad} \n")
+
+        trained_dataset.append(dataset_name)
+        output_dir = os.path.join(args.output_dir, "_".join(trained_dataset))
+        train_args = TrainingArguments(
+            output_dir,
+            num_train_epochs=1,
+            per_device_train_batch_size=1,
+            gradient_accumulation_steps=2,
+            gradient_checkpointing=True,
+            gradient_checkpointing_kwargs={"use_reentrant": False},
+            optim="paged_adamw_32bit",
+            save_steps=1000,
+            eval_steps=200,
+            logging_steps=200,
+            learning_rate=1e-5,
+            weight_decay=0.001,
+            warmup_ratio=0.03,
+            lr_scheduler_type="linear",
+        )
+
+        train_dataset = train_dataset_map[dataset_name]
+        valid_dataset = valid_dataset_map[dataset_name]
+        trainer = SFTTrainer(
+            model=model,
+            train_dataset=train_dataset,
+            eval_dataset=valid_dataset,
+            max_seq_length=2048,
+            tokenizer=tokenizer,
+            args=train_args,
+        )
+
+        print(f"{dataset_name} prune-masked training...")
+        trainer.train()
+        print(f"{dataset_name} prune-masked training end.")
+        trainer.save_model(args.output_dir)
 
 
 
