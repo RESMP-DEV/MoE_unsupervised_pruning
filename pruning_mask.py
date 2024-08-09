@@ -17,54 +17,71 @@ def calibration_generation(dataset_dir, dataset_name, sample_number=50):
 
 
 class PreTrainedDeepseekV2PrunerByDomain:
-    def __init__(self, model, calibration_data):
+    def __init__(self, model, calibration_data, batch_size=16):
         self.model = model.model
         self.tokenizer = tokenizer
         self.unsupervised_method = KMeans(n_clusters=model.config.num_experts_per_tok, random_state=0)
         self.calibration_data = calibration_data
+        self.batch_size = batch_size
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     def generate_unsupervised_map(self):
         print("unsupervising...")
         prompt = list(self.calibration_data["prompt"])
         completion = list(self.calibration_data["completion"])
-        inputs = self.tokenizer(prompt, completion, return_tensors='pt', max_length=128, padding=True, truncation=True)
-        # data to device
-        self.model = self.model.to(self.device)
-        input_ids = inputs['input_ids'].to(self.device)
-        attention_mask = inputs['attention_mask'].to(self.device)
-        # inference and expert score compute
-        with self.model.eval():
+
+        pre_ffn_hidden_states = None
+        batch_total = len(prompt) // self.batch_size + 1
+        for batch in range(batch_total):
+            start = min(batch * self.batch_size, len(prompt))
+            end = min((batch + 1) * self.batch_size, len(prompt))
+            if end == start:
+                continue
+            basic_prompt = prompt[start:end]
+            basic_completion = completion[start:end]
+            inputs = self.tokenizer(basic_prompt, basic_completion, return_tensors='pt', max_length=128, padding=True, truncation=True)
+            # data to device
+            input_ids = inputs['input_ids'].to(self.device)
+            attention_mask = inputs['attention_mask'].to(self.device)
+            # inference and expert score compute
+            self.model.eval()
             # inference
             output = self.model(input_ids, attention_mask, output_hidden_states=True, pre_ffn_hidden=True)
-            print("feed forward finish.")
+            print(f"batch {batch}/{batch_total} feed forward finish.")
             # param check
-            pre_ffn_hidden_states = output.pre_ffn_hidden_states
-            assert len(pre_ffn_hidden_states) == len(self.model.layers)
-            # expert score compute
-            self.unsupervised_map = {}
-            for idx, hidden_state in enumerate(pre_ffn_hidden_states):
-                if "DeepseekV2MLP" in str(type(self.model.layers[idx].mlp)):
-                    continue
+            if batch == 0:
+                pre_ffn_hidden_states = list(output.pre_ffn_hidden_states)
+                assert len(pre_ffn_hidden_states) == len(self.model.layers)
+            else:
+                update_pre_ffn_hidden_states = list(output.pre_ffn_hidden_states)
+                for layer_idx, layer in enumerate(pre_ffn_hidden_states):
+                    pre_ffn_hidden_states[layer_idx] = torch.cat([layer, update_pre_ffn_hidden_states[layer_idx]], dim=0)
+                assert len(pre_ffn_hidden_states) == len(self.model.layers)
 
-                score_weight = self.model.layers[idx].mlp.gate.weight
-                scores = F.linear(hidden_state.type(torch.float32), score_weight.type(torch.float32), None)
-                scores = scores.softmax(dim=-1, dtype=torch.float32).sum(0).sum(0).tolist()
-                print(f"layer {idx} feed forward finish.")
+        # expert score compute
+        self.unsupervised_map = {}
+        for idx, hidden_state in enumerate(pre_ffn_hidden_states):
+            if "DeepseekV2MLP" in str(type(self.model.layers[idx].mlp)):
+                continue
 
-                experts = self.model.layers[idx].mlp.experts
-                experts_output = []
-                for expert in experts:
-                    basic_output = expert(hidden_state).sum(1).flatten().type(torch.float16)
-                    experts_output.append(basic_output)
-                print(f"layer {idx} expert forward finish.")
+            score_weight = self.model.layers[idx].mlp.gate.weight
+            scores = F.linear(hidden_state.type(torch.float32), score_weight.type(torch.float32), None)
+            scores = scores.softmax(dim=-1, dtype=torch.float32).sum(0).sum(0).tolist()
+            print(f"layer {idx} feed forward finish.")
 
-                experts_output = torch.stack(experts_output)
-                kmeans_result = self.unsupervised_method.fit(experts_output.detach().numpy())
-                cluster_label = kmeans_result.labels_.tolist()
-                assert len(cluster_label) == self.model.config.n_routed_experts
+            experts = self.model.layers[idx].mlp.experts
+            experts_output = []
+            for expert in experts:
+                basic_output = expert(hidden_state).sum(1).flatten().type(torch.float16)
+                experts_output.append(basic_output)
+            print(f"layer {idx} expert forward finish.")
 
-                self.unsupervised_map[idx] = {cluster_label[i]: scores[i] for i in range(len(cluster_label))}
+            experts_output = torch.stack(experts_output)
+            kmeans_result = self.unsupervised_method.fit(experts_output.detach().numpy())
+            cluster_label = kmeans_result.labels_.tolist()
+            assert len(cluster_label) == self.model.config.n_routed_experts
+
+            self.unsupervised_map[idx] = {cluster_label[i]: scores[i] for i in range(len(cluster_label))}
 
     def generate_pruned_map(self, prune_rate=0.5):
         print("pruning...")
@@ -94,7 +111,7 @@ if __name__ == "__main__":
     dataset_name_list = ["MathInstruct", "finance_alpaca", "code_alpaca_20k"]
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map="auto", trust_remote_code=True)
 
     for dataset_name in dataset_name_list:
         train_df = calibration_generation(dataset_dir, dataset_name)
