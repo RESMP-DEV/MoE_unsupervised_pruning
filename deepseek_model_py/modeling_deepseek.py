@@ -1567,7 +1567,7 @@ class DeepseekV2Model(DeepseekV2PreTrainedModel):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
-            layer_mask = self.pruned_mask[idx] if idx in self.pruned_mask else None
+            layer_mask = self.pruned_mask[idx] if self.pruned_mask is not None and idx in self.pruned_mask else None
             if self.gradient_checkpointing and self.training:
                 layer_outputs = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
