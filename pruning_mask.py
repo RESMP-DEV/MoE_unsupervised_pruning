@@ -77,7 +77,7 @@ class PreTrainedDeepseekV2PrunerByDomain:
             print(f"layer {idx} expert forward finish.")
 
             experts_output = torch.stack(experts_output)
-            kmeans_result = self.unsupervised_method.fit(experts_output.detach().numpy())
+            kmeans_result = self.unsupervised_method.fit(experts_output.cpu().detach().numpy())
             cluster_label = kmeans_result.labels_.tolist()
             assert len(cluster_label) == self.model.config.n_routed_experts
 
