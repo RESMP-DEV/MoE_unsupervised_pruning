@@ -4,6 +4,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from sklearn.cluster import KMeans
 import pandas as pd
 import json
+import os
 
 from data_utils import dataset_local_load
 
@@ -39,7 +40,8 @@ class PreTrainedDeepseekV2PrunerByDomain:
                 continue
             basic_prompt = prompt[start:end]
             basic_completion = completion[start:end]
-            inputs = self.tokenizer(basic_prompt, basic_completion, return_tensors='pt', max_length=128, padding=True, truncation=True)
+            inputs = self.tokenizer(basic_prompt, basic_completion, return_tensors='pt', max_length=128,
+                                    padding='max_length', truncation=True)
             # data to device
             input_ids = inputs['input_ids'].to(self.device)
             attention_mask = inputs['attention_mask'].to(self.device)
@@ -47,15 +49,16 @@ class PreTrainedDeepseekV2PrunerByDomain:
             self.model.eval()
             # inference
             output = self.model(input_ids, attention_mask, output_hidden_states=True, pre_ffn_hidden=True)
-            print(f"batch {batch}/{batch_total} feed forward finish.")
-            # param check
+            print(f"batch {batch}/{batch_total - 1} feed forward finish.")
+            # ffn state merge
             if batch == 0:
                 pre_ffn_hidden_states = list(output.pre_ffn_hidden_states)
                 assert len(pre_ffn_hidden_states) == len(self.model.layers)
             else:
                 update_pre_ffn_hidden_states = list(output.pre_ffn_hidden_states)
                 for layer_idx, layer in enumerate(pre_ffn_hidden_states):
-                    pre_ffn_hidden_states[layer_idx] = torch.cat([layer, update_pre_ffn_hidden_states[layer_idx]], dim=0)
+                    pre_ffn_hidden_states[layer_idx] = torch.cat([layer, update_pre_ffn_hidden_states[layer_idx]],
+                                                                 dim=0)
                 assert len(pre_ffn_hidden_states) == len(self.model.layers)
 
         # expert score compute
@@ -72,6 +75,9 @@ class PreTrainedDeepseekV2PrunerByDomain:
             experts = self.model.layers[idx].mlp.experts
             experts_output = []
             for expert in experts:
+                # .flatten() -- [bs, seq_len, hidden] ==> [bs * seq_len * hidden]
+                # basic_output = expert(hidden_state).flatten().type(torch.float16)
+                # .sum(1).flatten() -- [bs, seq_len, hidden] ==> [bs, hidden] == > [bs * hidden]
                 basic_output = expert(hidden_state).sum(1).flatten().type(torch.float16)
                 experts_output.append(basic_output)
             print(f"layer {idx} expert forward finish.")
@@ -81,7 +87,7 @@ class PreTrainedDeepseekV2PrunerByDomain:
             cluster_label = kmeans_result.labels_.tolist()
             assert len(cluster_label) == self.model.config.n_routed_experts
 
-            self.unsupervised_map[idx] = {cluster_label[i]: scores[i] for i in range(len(cluster_label))}
+            self.unsupervised_map[idx] = {i: (cluster_label[i], scores[i]) for i in range(len(cluster_label))}
 
     def generate_pruned_map(self, prune_rate=0.5):
         print("pruning...")
@@ -90,7 +96,7 @@ class PreTrainedDeepseekV2PrunerByDomain:
         self.pruned_map = {}
         for layer_idx, cluster_info in self.unsupervised_map.items():
             new_map = {}
-            for expert_idx, (cluster_label, score) in enumerate(cluster_info):
+            for expert_idx, (cluster_label, score) in cluster_info.items():
                 if cluster_label not in new_map:
                     new_map[cluster_label] = {}
                 new_map[cluster_label][expert_idx] = score
@@ -109,18 +115,29 @@ if __name__ == "__main__":
     model_name = "/home/zhongyuan_peng/.cache/modelscope/hub/deepseek-ai/DeepSeek-V2-Lite"
     dataset_dir = "dataset"
     dataset_name_list = ["MathInstruct", "finance_alpaca", "code_alpaca_20k"]
+    sample_number = 200
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map="auto", trust_remote_code=True)
 
     for dataset_name in dataset_name_list:
-        train_df = calibration_generation(dataset_dir, dataset_name)
+        train_df = calibration_generation(dataset_dir, dataset_name, sample_number=sample_number)
         pruner = PreTrainedDeepseekV2PrunerByDomain(model, train_df)
-        pruner.generate_unsupervised_map()
-        pruner.generate_pruned_map()
 
-        save_file_path = f"pruned_result/{dataset_name}_pruning.json"
-        with open(save_file_path, 'w') as f:
-            json.dump(pruner.pruned_map, f)
+        unsupervised_save_path = f"pruned_result/{dataset_name}_unsupervised.json"
+        if not os.path.exists(unsupervised_save_path):
+            pruner.generate_unsupervised_map()
+            with open(unsupervised_save_path, 'w') as f:
+                json.dump(pruner.unsupervised_map, f)
+            print(f"unsupervised map saved to {unsupervised_save_path}")
+        else:
+            with open(unsupervised_save_path, 'r') as f:
+                pruner.unsupervised_map = json.load(f)
+            print(f"unsupervised map is loaded from {unsupervised_save_path}")
 
-        print(f"pruned map saved to {save_file_path}")
+        prune_save_file_path = f"pruned_result/{dataset_name}_prune.json"
+        if not os.path.exists(prune_save_file_path):
+            pruner.generate_pruned_map()
+            with open(prune_save_file_path, 'w') as f:
+                json.dump(pruner.pruned_map, f)
+            print(f"pruned map saved to {prune_save_file_path}")
