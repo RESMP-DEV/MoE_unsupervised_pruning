@@ -38,11 +38,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     train_dataset_map, valid_dataset_map = dataset_local_load(args.dataset_dir)
-    train_dataset = dataset_map_merge(train_dataset_map)
-    valid_dataset = dataset_map_merge(valid_dataset_map)
     print("data loaded.")
-    print(f"Training dataset size: {len(train_dataset)}")
-    print(f"Validation dataset size: {len(valid_dataset)}")
+
+    model, tokenizer = load_model()
+    print("model loaded.")
 
     peft_config = LoraConfig(
         r=64,
@@ -68,9 +67,6 @@ if __name__ == "__main__":
         with open(pruning_file_path, "r") as f:
             pruned_mask = json.load(f)
 
-        model, tokenizer = load_model(pruned_mask)
-        print(f"{dataset_name} prune-masked model loaded.")
-
         if len(trained_dataset) != 0:
             peft_model_path = os.path.join(args.output_dir, "_".join(trained_dataset))
             model = PeftModel.from_pretrained(model, peft_model_path)
@@ -92,11 +88,12 @@ if __name__ == "__main__":
             optim="paged_adamw_32bit",
             save_steps=1000,
             eval_steps=200,
-            logging_steps=200,
+            logging_steps=1,
             learning_rate=1e-5,
             weight_decay=0.001,
             warmup_ratio=0.03,
             lr_scheduler_type="linear",
+            report_to=["tensorboard"],
         )
 
         train_dataset = train_dataset_map[dataset_name]
