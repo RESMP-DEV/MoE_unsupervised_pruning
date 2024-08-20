@@ -75,11 +75,12 @@ if __name__ == "__main__":
         optim="paged_adamw_32bit",
         save_steps=1000,
         eval_steps=200,
-        logging_steps=200,
+        logging_steps=1,
         learning_rate=1e-5,
         weight_decay=0.001,
         warmup_ratio=0.03,
         lr_scheduler_type="linear",
+        report_to=["tensorboard"],
     )
 
     trainer = SFTTrainer(

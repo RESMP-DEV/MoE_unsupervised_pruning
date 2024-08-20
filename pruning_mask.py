@@ -1,8 +1,10 @@
+import argparse
 import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from sklearn.cluster import KMeans
 import pandas as pd
+import numpy as np
 import json
 import os
 
@@ -67,6 +69,10 @@ class PreTrainedDeepseekV2PrunerByDomain:
             if "DeepseekV2MLP" in str(type(self.model.layers[idx].mlp)):
                 continue
 
+            # for fast debugging
+            # if idx == 2:
+            #     break
+
             score_weight = self.model.layers[idx].mlp.gate.weight
             scores = F.linear(hidden_state.type(torch.float32), score_weight.type(torch.float32), None)
             scores = scores.softmax(dim=-1, dtype=torch.float32).sum(0).sum(0).tolist()
@@ -78,12 +84,13 @@ class PreTrainedDeepseekV2PrunerByDomain:
                 # .flatten() -- [bs, seq_len, hidden] ==> [bs * seq_len * hidden]
                 # basic_output = expert(hidden_state).flatten().type(torch.float16)
                 # .sum(1).flatten() -- [bs, seq_len, hidden] ==> [bs, hidden] == > [bs * hidden]
-                basic_output = expert(hidden_state).sum(1).flatten().type(torch.float16)
+                basic_output = expert(hidden_state).mean(1).flatten().type(torch.float16)
                 experts_output.append(basic_output)
             print(f"layer {idx} expert forward finish.")
 
             experts_output = torch.stack(experts_output)
-            kmeans_result = self.unsupervised_method.fit(experts_output.cpu().detach().numpy())
+            unsupervised_data = experts_output.cpu().detach().numpy()
+            kmeans_result = self.unsupervised_method.fit(unsupervised_data)
             cluster_label = kmeans_result.labels_.tolist()
             assert len(cluster_label) == self.model.config.n_routed_experts
 
@@ -112,31 +119,40 @@ class PreTrainedDeepseekV2PrunerByDomain:
 
 
 if __name__ == "__main__":
-    model_name = "/home/zhongyuan_peng/.cache/modelscope/hub/deepseek-ai/DeepSeek-V2-Lite"
-    dataset_dir = "dataset"
-    dataset_name_list = ["MathInstruct", "finance_alpaca", "code_alpaca_20k"]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_path", type=str, required=True, help="Model directory to load.")
+    parser.add_argument("--dataset_dir", type=str, required=True, help="Dataset directory.")
+    parser.add_argument("--dataset_name_list", type=str, required=True, help="Dataset name list.")
+    parser.add_argument("--sample_number", type=int, default=200, help="Number of samples.")
+    args = parser.parse_args()
+
+    model_path = args.model_path
+    dataset_dir = args.dataset_dir
+    dataset_name_list = args.dataset_dir.split(",")
     sample_number = 200
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map="auto", trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype="auto", device_map="auto", trust_remote_code=True)
 
     for dataset_name in dataset_name_list:
         train_df = calibration_generation(dataset_dir, dataset_name, sample_number=sample_number)
         pruner = PreTrainedDeepseekV2PrunerByDomain(model, train_df)
 
         unsupervised_save_path = f"pruned_result/{dataset_name}_unsupervised.json"
-        if not os.path.exists(unsupervised_save_path):
+        if os.path.exists(unsupervised_save_path):
+            with open(unsupervised_save_path, 'r') as f:
+                pruner.unsupervised_map = json.load(f)
+            print(f"unsupervised map is loaded from {unsupervised_save_path}")
+        else:
             pruner.generate_unsupervised_map()
             with open(unsupervised_save_path, 'w') as f:
                 json.dump(pruner.unsupervised_map, f)
             print(f"unsupervised map saved to {unsupervised_save_path}")
-        else:
-            with open(unsupervised_save_path, 'r') as f:
-                pruner.unsupervised_map = json.load(f)
-            print(f"unsupervised map is loaded from {unsupervised_save_path}")
 
         prune_save_file_path = f"pruned_result/{dataset_name}_prune.json"
-        if not os.path.exists(prune_save_file_path):
+        if os.path.exists(prune_save_file_path):
+            print(f"pruned map is located at {prune_save_file_path}")
+        else:
             pruner.generate_pruned_map()
             with open(prune_save_file_path, 'w') as f:
                 json.dump(pruner.pruned_map, f)
