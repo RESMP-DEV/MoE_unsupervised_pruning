@@ -31,9 +31,11 @@ if __name__ == "__main__":
     parser.add_argument("--model_path", type=str, required=True, help="Model directory to load.")
     parser.add_argument("--dataset_dir", type=str, required=True, help="Dataset directory.")
     parser.add_argument("--output_dir", type=str, required=True, help="Training result directory.")
+    parser.add_argument("--train_length", type=str, required=True, help="Train dataset length.")
+    parser.add_argument("--valid_length", type=str, required=True, help="Valid dataset length.")
     args = parser.parse_args()
 
-    train_dataset_map, valid_dataset_map = dataset_local_load(args.dataset_dir)
+    train_dataset_map, valid_dataset_map = dataset_local_load(args.dataset_dir, train_length=args.train_length, valid_length=args.valid_length)
     train_dataset = dataset_map_merge(train_dataset_map)
     valid_dataset = dataset_map_merge(valid_dataset_map)
     print("data loaded.")
@@ -65,13 +67,17 @@ if __name__ == "__main__":
     # for name, param in model.named_parameters():
     #     print(f"Parameter Name: {name} | Size: {param.size()} | Type: {param.data.dtype} | Trainable: {param.requires_grad} \n")
 
+    output_dir = os.path.join(args.output_dir, f"train_{args.train_length}_valid_{args.valid_length}")
+    output_dir = os.path.join(output_dir, "baseline_finetuning")
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
     train_args = TrainingArguments(
-        args.output_dir,
+        output_dir,
         num_train_epochs=1,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=2,
-        gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
+        # gradient_checkpointing=True,
+        # gradient_checkpointing_kwargs={"use_reentrant": False},
         optim="paged_adamw_32bit",
         save_steps=1000,
         eval_steps=200,
@@ -95,7 +101,7 @@ if __name__ == "__main__":
     print("training...")
     trainer.train()
     print("training end.")
-    trainer.save_model(args.output_dir)
+    trainer.save_model(output_dir)
 
 
 

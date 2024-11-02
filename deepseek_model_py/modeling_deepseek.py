@@ -428,7 +428,7 @@ class MoEGate(nn.Module):
             hidden_states.type(torch.float32), self.weight.type(torch.float32), None
         )
         if layer_mask is not None:
-            mask = torch.zeros(logits.size(), dtype=torch.bool)
+            mask = torch.zeros(logits.size(), dtype=torch.bool).to(logits.device)
             mask[:, layer_mask] = True
             logits = logits.masked_fill(mask, float('-inf'))
         if self.scoring_func == "softmax":
@@ -465,22 +465,6 @@ class MoEGate(nn.Module):
             topk_weight, topk_idx = torch.topk(
                 tmp_scores, k=self.top_k, dim=-1, sorted=False
             )
-        # elif self.topk_method == "kmeans_cluster_fusion":
-        #     kmeans = KMeans(n_clusters=self.top_k, random_state=0).fit(hidden_states.T)
-        #     cluster_label = torch.tensor(kmeans.labels_)
-        #
-        #     for i in range(self.top_k):
-        #         cluster_scores = scores.masked_fill(cluster_label != i, 0.0)
-        #         if i == 0:
-        #             topk_weight, topk_idx = torch.topk(
-        #                 cluster_scores, k=1, dim=-1, sorted=False
-        #             )
-        #         else:
-        #             new_topk_weight, new_topk_idx = torch.topk(
-        #                 cluster_scores, k=1, dim=-1, sorted=False
-        #             )
-        #             topk_weight = torch.cat([topk_weight, new_topk_weight], axis=0)
-        #             topk_idx = torch.cat([topk_idx, new_topk_idx], axis=0)
 
         ### norm gate to sum 1
         if self.top_k > 1 and self.norm_topk_prob:
@@ -1567,7 +1551,7 @@ class DeepseekV2Model(DeepseekV2PreTrainedModel):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
-            layer_mask = self.pruned_mask[idx] if self.pruned_mask is not None and idx in self.pruned_mask else None
+            layer_mask = self.pruned_mask[str(idx)] if self.pruned_mask is not None and str(idx) in self.pruned_mask else None
             if self.gradient_checkpointing and self.training:
                 layer_outputs = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
@@ -1714,6 +1698,11 @@ class DeepseekV2ForCausalLM(DeepseekV2PreTrainedModel):
             if output_hidden_states is not None
             else self.config.output_hidden_states
         )
+        pre_ffn_hidden = (
+            pre_ffn_hidden
+            if pre_ffn_hidden is not None
+            else self.config.pre_ffn_hidden
+        )
         return_dict = (
             return_dict if return_dict is not None else self.config.use_return_dict
         )
@@ -1759,7 +1748,7 @@ class DeepseekV2ForCausalLM(DeepseekV2PreTrainedModel):
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
-            pre_ffn_hidden_states=outputs.all_pre_ffn_hiddens,
+            pre_ffn_hidden_states=outputs.pre_ffn_hidden_states,
         )
 
     def prepare_inputs_for_generation(
