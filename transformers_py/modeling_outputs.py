@@ -425,6 +425,20 @@ class MoeModelOutputWithPast(ModelOutput):
 
 
 @dataclass
+class MoeModelOutputWithPastAndPreFFNHidden(MoeModelOutputWithPast):
+    """
+    Base class for model's outputs that may also contain a pre-ffn hidden state.
+
+    Args:
+        pre_ffn_hidden_states (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `pre_ffn_hidden=True` is passed or when `config.pre_ffn_hidden=True`):
+            Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with the shape
+            `(batch_size, sequence_length, hidden_size)`.
+
+    """
+    pre_ffn_hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
+
+
+@dataclass
 class MoeCausalLMOutputWithPast(ModelOutput):
     """
     Base class for causal language model (or autoregressive) with mixture of experts outputs.
@@ -471,6 +485,20 @@ class MoeCausalLMOutputWithPast(ModelOutput):
     hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
     attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
     router_logits: Optional[Tuple[torch.FloatTensor]] = None
+
+
+@dataclass
+class MoeCausalLMOutputWithPastAndPreFFNHidden(MoeCausalLMOutputWithPast):
+    """
+    Base class for model's outputs that may also contain a pre-ffn hidden state.
+
+    Args:
+        pre_ffn_hidden_states (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `pre_ffn_hidden=True` is passed or when `config.pre_ffn_hidden=True`):
+            Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with the shape
+            `(batch_size, sequence_length, hidden_size)`.
+
+    """
+    pre_ffn_hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
 
 
 @dataclass

@@ -37,7 +37,7 @@ def c4_calibration_generation(dataset_path, sample_number=10000):
     df = df.sample(n=sample_number, random_state=1, axis=0)
     return df
 
-class PreTrainedDeepseekV2Pruner:
+class PreTrainedMoEPruner:
     def __init__(self, model, tokenizer, calibration_data, batch_size=16, pruning_method="in_class_prune", cluster_number=12):
         self.model = model.model
         self.tokenizer = tokenizer
@@ -112,7 +112,7 @@ class PreTrainedDeepseekV2Pruner:
         print("unsupervise pruning...")
         self.unsupervised_map = {}
         for idx, hidden_state in enumerate(self.pre_ffn_hidden_states):
-            if "DeepseekV2MLP" in str(type(self.model.layers[idx].mlp)):
+            if "MLP" in str(type(self.model.layers[idx].mlp)):
                 continue
 
             # for fast debugging
@@ -156,7 +156,7 @@ class PreTrainedDeepseekV2Pruner:
         print("seer pruning...")
         seer_map_score_stat = {}
         for idx, hidden_state in enumerate(self.pre_ffn_hidden_states):
-            if "DeepseekV2MLP" in str(type(self.model.layers[idx].mlp)):
+            if "MLP" in str(type(self.model.layers[idx].mlp)):
                 continue
 
             # for fast debugging
@@ -249,8 +249,8 @@ def domain_pruning():
 
     for dataset_name in dataset_name_list:
         train_df = domain_calibration_generation(dataset_dir, dataset_name, sample_number=sample_number)
-        pruner = PreTrainedDeepseekV2Pruner(model, tokenizer, train_df, batch_size=batch_size, pruning_method=pruning_method,
-                                            cluster_number=cluster_number)
+        pruner = PreTrainedMoEPruner(model, tokenizer, train_df, batch_size=batch_size, pruning_method=pruning_method,
+                                     cluster_number=cluster_number)
         pruner.forward()
 
         unsupervised_save_path = f"{base_path}/{dataset_name}_unsupervised.json"
@@ -283,9 +283,8 @@ def mix_pruning():
         os.makedirs(base_path)
 
     train_df = mix_calibration_generation(dataset_dir, dataset_name_list, sample_number=sample_number)
-    pruner = PreTrainedDeepseekV2Pruner(model, tokenizer, train_df, batch_size=batch_size,
-                                        pruning_method=pruning_method,
-                                        cluster_number=cluster_number)
+    pruner = PreTrainedMoEPruner(model, tokenizer, train_df, batch_size=batch_size,
+                                 pruning_method=pruning_method, cluster_number=cluster_number)
     pruner.forward()
     unsupervised_save_path = f"{base_path}/mix_unsupervised.json"
     if os.path.exists(unsupervised_save_path):
@@ -309,7 +308,6 @@ def mix_pruning():
         print(f"pruned map saved to {prune_save_file_path}")
 
 
-
 def seer_pruning():
     print("Seer Pruning...")
     base_path = f"pruned_result/sample_{sample_number}/{pruning_method}_{prune_rate}"
@@ -326,8 +324,8 @@ def seer_pruning():
 
     dataset_path = f"{dataset_dir}/{dataset_name}"
     train_df = c4_calibration_generation(dataset_path, sample_number=sample_number)
-    pruner = PreTrainedDeepseekV2Pruner(model, tokenizer, train_df, batch_size=batch_size, pruning_method=pruning_method,
-                                            cluster_number=cluster_number)
+    pruner = PreTrainedMoEPruner(model, tokenizer, train_df, batch_size=batch_size, pruning_method=pruning_method,
+                                 cluster_number=cluster_number)
     pruner.forward()
     seer_base_path = f"{base_path}/{dataset_name_list[0]}_prune.json"
     if os.path.exists(seer_base_path):
@@ -374,7 +372,6 @@ if __name__ == "__main__":
         else:
             # mix pruning
             mix_pruning()
-
 
     # seer pruning
     if "seer_prune" in pruning_method:
