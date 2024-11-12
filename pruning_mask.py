@@ -243,7 +243,7 @@ class PreTrainedMoEPruner:
 
 def domain_pruning():
     print("Domain Pruning...")
-    base_path = f"pruned_result/sample_{sample_number}_cluster_{cluster_number}/{pruning_method}_{prune_rate}"
+    base_path = f"pruned_result/{model_name}/sample_{sample_number}_cluster_{cluster_number}/{pruning_method}_{prune_rate}"
     if not os.path.exists(base_path):
         os.makedirs(base_path)
 
@@ -278,7 +278,7 @@ def domain_pruning():
 
 def mix_pruning():
     print("Mix Pruning...")
-    base_path = f"pruned_result/sample_{sample_number}_cluster_{cluster_number}/{pruning_method}_{prune_rate}"
+    base_path = f"pruned_result/{model_name}/sample_{sample_number}_cluster_{cluster_number}/{pruning_method}_{prune_rate}"
     if not os.path.exists(base_path):
         os.makedirs(base_path)
 
@@ -310,7 +310,7 @@ def mix_pruning():
 
 def seer_pruning():
     print("Seer Pruning...")
-    base_path = f"pruned_result/sample_{sample_number}/{pruning_method}_{prune_rate}"
+    base_path = f"pruned_result/{model_name}/sample_{sample_number}/{pruning_method}_{prune_rate}"
     if not os.path.exists(base_path):
         os.makedirs(base_path)
 
@@ -361,6 +361,8 @@ if __name__ == "__main__":
     by_domain = args.by_domain
     pruning_method = args.pruning_method
     prune_rate = args.prune_rate
+
+    model_name = model_path.split("/")[-1]
 
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype="auto", device_map="auto", trust_remote_code=True)
