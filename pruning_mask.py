@@ -189,7 +189,7 @@ class PreTrainedMoEPruner:
         if hasattr(self.model.config, "n_routed_experts"):
             total_expert_num = self.model.config.n_routed_experts
         elif hasattr(self.model.config, "num_experts"):
-            total_expert_num = self.model.config.n_routed_experts
+            total_expert_num = self.model.config.num_experts
         else:
             raise AttributeError("No suitable attribute representing number of experts")
         length_pctg = cluster_length / total_expert_num
