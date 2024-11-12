@@ -186,7 +186,13 @@ class PreTrainedMoEPruner:
         print(f"global expert pruning finish.")
 
     def dynamic_coef_compute(self, cluster_length):
-        length_pctg = cluster_length / self.model.config.n_routed_experts
+        if hasattr(self.model.config, "n_routed_experts"):
+            total_expert_num = self.model.config.n_routed_experts
+        elif hasattr(self.model.config, "num_experts"):
+            total_expert_num = self.model.config.n_routed_experts
+        else:
+            raise AttributeError("No suitable attribute representing number of experts")
+        length_pctg = cluster_length / total_expert_num
         dynamic_coef = math.exp(0.5 - length_pctg) - math.exp(length_pctg - 0.5) / (math.exp(length_pctg - 0.5) + math.exp(0.5 - length_pctg))
         dynamic_coef *= 0.6
         dynamic_coef = dynamic_coef + 0.5
