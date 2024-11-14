@@ -71,7 +71,7 @@ def dataset_local_load(dataset_dir_path, train_length=5000, valid_length=500):
                 dataset_list = json.load(f)
                 res_list = []
                 for data in dataset_list:
-                    if "source" in data and "CoT" not in data["source"]:
+                    if "source" in data and "/CoT/" not in data["source"]:
                         continue
                     res_list.append(format_parse(data, dataset_name))
             train_dataset_map[dataset_name] = res_list
@@ -85,7 +85,7 @@ def dataset_local_load(dataset_dir_path, train_length=5000, valid_length=500):
                 dataset_list = json.load(f)
                 res_list = []
                 for data in dataset_list:
-                    if "source" in data and "CoT" not in data["source"]:
+                    if "source" in data and "/CoT/" not in data["source"]:
                         continue
                     res_list.append(format_parse(data, dataset_name))
             valid_dataset_map[dataset_name] = res_list
