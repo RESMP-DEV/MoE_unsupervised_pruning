@@ -154,7 +154,7 @@ class PreTrainedMoEPruner:
                     basic_cluster_result = uns.fit(basic_unsupervised_data)
                     basic_cluster_label = basic_cluster_result.labels_.tolist()
                 elif self.pruning_method == "hierarchical_prune":
-                    Z = linkage(basic_unsupervised_data, method="average")
+                    Z = linkage(basic_unsupervised_data, method="ward")
                     basic_cluster_label = fcluster(Z, t=self.cluster_number, criterion='maxclust').tolist()
                 else:
                     raise NotImplementedError("Unsupervised pruning method has not been implemented yet.")
