@@ -296,7 +296,7 @@ def domain_pruning():
 
 def mix_pruning():
     print("Mix Pruning...")
-    base_path = f"pruned_result/{model_name}/sample_{sample_number}_cluster_{cluster_number}/{pruning_method}_{prune_rate}"
+    base_path = f"pruned_result/{model_name}/sample_{sample_number}_cluster_{cluster_number}/{pruning_method}/rate_{prune_rate}"
     if not os.path.exists(base_path):
         os.makedirs(base_path)
 
@@ -328,7 +328,7 @@ def mix_pruning():
 
 def seer_pruning():
     print("Seer Pruning...")
-    base_path = f"pruned_result/{model_name}/sample_{sample_number}/{pruning_method}_{prune_rate}"
+    base_path = f"pruned_result/{model_name}/sample_{sample_number}/{pruning_method}/rate_{prune_rate}"
     if not os.path.exists(base_path):
         os.makedirs(base_path)
 
