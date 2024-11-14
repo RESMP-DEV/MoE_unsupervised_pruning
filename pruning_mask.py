@@ -366,6 +366,7 @@ if __name__ == "__main__":
     model_name = model_path.split("/")[-1]
 
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    tokenizer.padding_side = 'left'
     model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype="auto", device_map="auto", trust_remote_code=True)
 
     # seer pruning
