@@ -225,35 +225,17 @@ class PreTrainedMoEPruner:
                         cluster_map[cluster_label] = {}
                     cluster_map[cluster_label][expert_idx] = score
 
-                if self.pruning_method == "kmeans_prune":
-                    for cluster_label, cluster_result_info in cluster_map.items():
-                        cluster_length = len(cluster_result_info)
+                for cluster_label, cluster_result_info in cluster_map.items():
+                    cluster_length = len(cluster_result_info)
 
-                        if cluster_length < 3:
-                            selected_cluster_info = cluster_result_info.items()
-                        else:
-                            dynamic_coef = self.dynamic_coef_compute(cluster_length)
-                            selected_cluster_info = sorted(cluster_result_info.items(), key=lambda x: x[1], reverse=True)[
-                                                  :int(dynamic_coef * (1 - prune_rate) * cluster_length)]
-                        for (selected_expert_idx, selected_expert_score) in selected_cluster_info:
-                            selected_expert_map[selected_expert_idx] += 1
-
-                elif self.pruning_method == "out_class_prune":
-                    cluster_score_map = {}
-                    for cluster_label, cluster_result_info in cluster_map.items():
-                        cluster_score = (sum(list(cluster_result_info.values())) / len(cluster_result_info), list(cluster_result_info.keys()))
-                        cluster_score_map[cluster_label] = cluster_score
-                    sorted_cluster_score_info = sorted(cluster_score_map.items(), key=lambda x: x[0], reverse=True)
-                    selected_nb = 0
-                    for (avg_score, expert_idx_list) in sorted_cluster_score_info:
-                        for expert_idx in expert_idx_list:
-                            selected_expert_map[expert_idx] += 1
-                        selected_nb += len(expert_idx_list)
-                        if selected_nb > (len(cluster_info[0]) * (1 - prune_rate)):
-                            break
-
-                else:
-                    raise NotImplementedError("Pruning method has not been implemented.")
+                    if cluster_length < 3:
+                        selected_cluster_info = cluster_result_info.items()
+                    else:
+                        dynamic_coef = self.dynamic_coef_compute(cluster_length)
+                        selected_cluster_info = sorted(cluster_result_info.items(), key=lambda x: x[1], reverse=True)[
+                                              :int(dynamic_coef * (1 - prune_rate) * cluster_length)]
+                    for (selected_expert_idx, selected_expert_score) in selected_cluster_info:
+                        selected_expert_map[selected_expert_idx] += 1
 
             self.selected_expert_map[layer_idx] = selected_expert_map
             pruned_experts = sorted(selected_expert_map.items(), key=lambda x: x[1])[:int(prune_rate * len(selected_expert_map))]
