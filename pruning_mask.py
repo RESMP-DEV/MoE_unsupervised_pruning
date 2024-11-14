@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from sklearn.cluster import KMeans
+from scipy.cluster.hierarchy import linkage, fcluster
 from datasets import load_dataset
 import pandas as pd
 import numpy as np
@@ -38,16 +39,16 @@ def c4_calibration_generation(dataset_path, sample_number=10000):
     return df
 
 class PreTrainedMoEPruner:
-    def __init__(self, model, tokenizer, calibration_data, batch_size=16, pruning_method="in_class_prune", cluster_number=12):
+    def __init__(self, model, tokenizer, calibration_data, batch_size=16, pruning_method="kmeans_prune",
+                 cluster_number=12, sentence_emd="avg_pooling"):
         self.model = model.model
         self.tokenizer = tokenizer
         self.calibration_data = calibration_data
         self.batch_size = batch_size
         self.pruning_method = pruning_method
-        if "class_prune" in self.pruning_method:
-            self.unsupervised_method = KMeans(n_clusters=cluster_number, random_state=0)
+        self.cluster_number = cluster_number
+        self.sentence_emd = sentence_emd
         self.device = model.device
-        self.sentence_emd = "avg_pooling"
 
     def seq_to_sentence(self, emb):
         # [bs, seq_len, hidden] == > [bs, hidden]
@@ -60,6 +61,8 @@ class PreTrainedMoEPruner:
         print("forwarding...")
         if "prompt" in self.calibration_data.columns:
             prompt = list(self.calibration_data["prompt"])
+            # delete corresponding prompt text
+            prompt = ["### Instruction:" + basic_prompt.split("### Instruction:")[1] for basic_prompt in prompt]
             completion = list(self.calibration_data["completion"])
             calib_dataset_length = len(self.calibration_data["prompt"])
             data_flag = 1
@@ -146,10 +149,19 @@ class PreTrainedMoEPruner:
                 basic_output = experts_output[:, start:end, :].view(len(experts), -1).to(torch.float16)
                 basic_score = scores[start:end, :].mean(0).tolist()
                 basic_unsupervised_data = basic_output.cpu().detach().numpy()
-                basic_kmeans_result = self.unsupervised_method.fit(basic_unsupervised_data)
-                basic_cluster_label = basic_kmeans_result.labels_.tolist()
-                basic_cluster_result = [(basic_cluster_label[i], basic_score[i]) for i in range(len(basic_cluster_label))]
-                self.unsupervised_map[idx].append(basic_cluster_result)
+                if self.pruning_method == "kmeans_prune":
+                    uns = KMeans(n_clusters=self.cluster_number, random_state=0)
+                    basic_cluster_result = uns.fit(basic_unsupervised_data)
+                    basic_cluster_label = basic_cluster_result.labels_.tolist()
+                elif self.pruning_method == "hierarchical_prune":
+                    Z = linkage(basic_unsupervised_data, method="average")
+                    basic_cluster_label = fcluster(Z, t=self.cluster_number, criterion='maxclust').tolist()
+                else:
+                    raise NotImplementedError("Unsupervised pruning method has not been implemented yet.")
+
+                basic_cluster_final_result = [(basic_cluster_label[i], basic_score[i]) for i in
+                                              range(len(basic_cluster_label))]
+                self.unsupervised_map[idx].append(basic_cluster_final_result)
             print(f"layer {idx} unsupervised learning finish.")
 
     def generate_seer_map(self, prune_rate=0.5):
@@ -213,7 +225,7 @@ class PreTrainedMoEPruner:
                         cluster_map[cluster_label] = {}
                     cluster_map[cluster_label][expert_idx] = score
 
-                if self.pruning_method == "in_class_prune":
+                if self.pruning_method == "kmeans_prune":
                     for cluster_label, cluster_result_info in cluster_map.items():
                         cluster_length = len(cluster_result_info)
 
