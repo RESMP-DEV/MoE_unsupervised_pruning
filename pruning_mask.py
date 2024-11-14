@@ -385,14 +385,12 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype="auto", device_map="auto", trust_remote_code=True)
 
-    if "class_prune" in pruning_method:
-        if by_domain:
-            # domain pruning
-            domain_pruning()
-        else:
-            # mix pruning
-            mix_pruning()
-
     # seer pruning
-    if "seer_prune" in pruning_method:
+    if pruning_method == "seer_prune":
         seer_pruning()
+    elif by_domain:
+        # domain pruning
+        domain_pruning()
+    else:
+        # mix pruning
+        mix_pruning()
