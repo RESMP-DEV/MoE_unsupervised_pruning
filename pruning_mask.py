@@ -248,6 +248,7 @@ def domain_pruning():
         os.makedirs(base_path)
 
     for dataset_name in dataset_name_list:
+        print(f"Dataset: {dataset_name}")
         train_df = domain_calibration_generation(dataset_dir, dataset_name, sample_number=sample_number)
         pruner = PreTrainedMoEPruner(model, tokenizer, train_df, batch_size=batch_size, pruning_method=pruning_method,
                                      cluster_number=cluster_number)
