@@ -69,8 +69,12 @@ def dataset_local_load(dataset_dir_path, train_length=5000, valid_length=500):
             dataset_name = file_name.split(f"_{train_length}_train.json")[0]
             with open(file_name_path, "r") as f:
                 dataset_list = json.load(f)
-                dataset_list = [format_parse(data, dataset_name) for data in dataset_list]
-            train_dataset_map[dataset_name] = dataset_list
+                res_list = []
+                for data in dataset_list:
+                    if "source" in data and "CoT" not in data["source"]:
+                        continue
+                    res_list.append(format_parse(data, dataset_name))
+            train_dataset_map[dataset_name] = res_list
 
     valid_dataset_map = {}
     for file_name in files:
@@ -79,8 +83,12 @@ def dataset_local_load(dataset_dir_path, train_length=5000, valid_length=500):
             dataset_name = file_name.split(f"_{valid_length}_valid.json")[0]
             with open(file_name_path, "r") as f:
                 dataset_list = json.load(f)
-                dataset_list = [format_parse(data, dataset_name) for data in dataset_list]
-            valid_dataset_map[dataset_name] = dataset_list
+                res_list = []
+                for data in dataset_list:
+                    if "source" in data and "CoT" not in data["source"]:
+                        continue
+                    res_list.append(format_parse(data, dataset_name))
+            valid_dataset_map[dataset_name] = res_list
 
     return train_dataset_map, valid_dataset_map
 
