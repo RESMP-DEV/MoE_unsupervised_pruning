@@ -116,8 +116,8 @@ if __name__ == "__main__":
     dataset_dir = "dataset"
     train_length = 5000
     valid_length = 500
-    train_valid_split_and_sample(dataset_dir, train_length, valid_length)
+    # train_valid_split_and_sample(dataset_dir, train_length, valid_length)
 
-    # train_dataset_map, valid_dataset_map = dataset_local_load(dataset_dir, train_length=train_length, valid_length=valid_length)
+    train_dataset_map, valid_dataset_map = dataset_local_load(dataset_dir, train_length=train_length, valid_length=valid_length)
     # train_dataset = dataset_map_merge(train_dataset_map)
     # valid_dataset = dataset_map_merge(valid_dataset_map)

@@ -134,7 +134,7 @@ class PreTrainedMoEPruner:
                     basic_output = expert(hidden_state.to(self.device)).cpu()
                     experts_output.append(basic_output)
 
-            print(f"layer {idx} expert forward finish.")
+            print(f"layer {idx} experts forward finish.")
 
             experts_output = torch.stack(experts_output)  # [expert_num, bs, hidden]
             self.unsupervised_map[idx] = []
@@ -162,7 +162,7 @@ class PreTrainedMoEPruner:
                 basic_cluster_final_result = [(basic_cluster_label[i], basic_score[i]) for i in
                                               range(len(basic_cluster_label))]
                 self.unsupervised_map[idx].append(basic_cluster_final_result)
-            print(f"layer {idx} unsupervised learning finish.")
+            print(f"layer {idx} {self.pruning_method} unsupervised learning finish.")
 
     def generate_seer_map(self, prune_rate=0.5):
         print("seer pruning...")
