@@ -75,6 +75,15 @@ def dataset_local_load(dataset_dir_path, train_length=5000, valid_length=500):
                         continue
                     res_list.append(format_parse(data, dataset_name))
             train_dataset_map[dataset_name] = res_list
+        elif file_name.startswith("c4"):
+            file_name_path = os.path.join(dataset_dir_path, file_name)
+            dataset_name = "c4"
+            with open(file_name_path, "r") as f:
+                res_list = []
+                for line in f:
+                    data = json.loads(line)
+                    res_list.append({"text": data["text"]})
+            train_dataset_map[dataset_name] = res_list
 
     valid_dataset_map = {}
     for file_name in files:
@@ -89,6 +98,7 @@ def dataset_local_load(dataset_dir_path, train_length=5000, valid_length=500):
                         continue
                     res_list.append(format_parse(data, dataset_name))
             valid_dataset_map[dataset_name] = res_list
+
 
     return train_dataset_map, valid_dataset_map
 
