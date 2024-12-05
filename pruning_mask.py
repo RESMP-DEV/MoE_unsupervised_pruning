@@ -11,7 +11,8 @@ import json
 import os
 import math
 
-from data_utils import dataset_local_load
+from utils.data_utils import dataset_local_load
+from utils.hsic_utils import hsic_split_graph
 
 
 def domain_calibration_generation(dataset_dir, dataset_name, sample_number=50):
@@ -197,6 +198,45 @@ class PreTrainedMoEPruner:
             self.seer_map[layer_idx].append(expert_idx)
         print(f"global expert pruning finish.")
 
+    def generate_hsic_map(self, prune_rate=0.5):
+        print("hsic pruning...")
+        self.hsic_map = {}
+        for idx, hidden_state in enumerate(self.pre_ffn_hidden_states):
+            if "MLP" in str(type(self.model.layers[idx].mlp)):
+                continue
+
+            # for fast debugging
+            # if idx == 2:
+            #     break
+
+            with torch.no_grad():
+                score_weight = self.model.layers[idx].mlp.gate.weight
+                scores = F.linear(hidden_state.to(score_weight.device).type(torch.float32),
+                                  score_weight.type(torch.float32), None)
+                scores = scores.softmax(dim=-1, dtype=torch.float32)
+                print(f"layer {idx} feed forward finish.")
+
+                experts = self.model.layers[idx].mlp.experts
+                experts_output = []
+                for expert in experts:
+                    basic_output = expert(hidden_state.to(self.device)).cpu()
+                    experts_output.append(basic_output)
+            print(f"layer {idx} experts forward finish.")
+
+            experts_output = torch.stack(experts_output)  # [expert_num, bs, hidden]
+            unsupervised_data = experts_output.to(torch.float16).cpu().detach().numpy()
+            subgraphs = hsic_split_graph(unsupervised_data, prune_rate)
+            self.hsic_map[idx] = []
+            for subgraph in subgraphs:
+                if len(subgraph) == 1:
+                    continue
+                score = scores[subgraph]
+                max_value, max_index = torch.max(score, dim=0)
+                for i in range(len(score)):
+                    if i != max_index.item():
+                        self.hsic_map[idx].append(score[i].item())
+            print(f"layer {idx} {self.pruning_method} pruning finish.")
+
     def dynamic_coef_compute(self, cluster_length):
         if hasattr(self.model.config, "n_routed_experts"):
             total_expert_num = self.model.config.n_routed_experts
@@ -340,6 +380,37 @@ def seer_pruning():
         print(f"seer map saved to {seer_base_path}")
 
 
+def hsic_pruning():
+    print("HSIC Pruning...")
+    base_path = f"pruned_result/{model_name}/sample_{sample_number}/{pruning_method}/rate_{prune_rate}"
+    if not os.path.exists(base_path):
+        os.makedirs(base_path)
+
+    assert len(dataset_name_list) == 1
+    dataset_name = None
+    for file in os.listdir(dataset_dir):
+        if file.startswith(dataset_name_list[0]):
+            dataset_name = file
+            break
+    assert dataset_name is not None
+
+    dataset_path = f"{dataset_dir}/{dataset_name}"
+    train_df = c4_calibration_generation(dataset_path, sample_number=sample_number)
+    pruner = PreTrainedMoEPruner(model, tokenizer, train_df, batch_size=batch_size, pruning_method=pruning_method,
+                                 cluster_number=cluster_number)
+    pruner.forward()
+    hsic_base_path = f"{base_path}/{dataset_name_list[0]}_prune.json"
+    if os.path.exists(hsic_base_path):
+        with open(hsic_base_path, 'r') as f:
+            pruner.unsupervised_map = json.load(f)
+        print(f"hsic map is loaded from {hsic_base_path}")
+    else:
+        pruner.generate_hsic_map(prune_rate=prune_rate)
+        with open(hsic_base_path, 'w') as f:
+            json.dump(pruner.seer_map, f)
+        print(f"hsic map saved to {hsic_base_path}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, required=True, help="Model directory to load.")
@@ -369,9 +440,12 @@ if __name__ == "__main__":
     tokenizer.padding_side = 'left'
     model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype="auto", device_map="auto", trust_remote_code=True)
 
-    # seer pruning
     if pruning_method == "seer_prune":
+        # seer pruning
         seer_pruning()
+    elif pruning_method == "hsic_prune":
+        # hsic pruning
+        hsic_pruning()
     elif by_domain:
         # domain pruning
         domain_pruning()

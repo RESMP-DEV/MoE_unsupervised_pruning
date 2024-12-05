@@ -1,11 +1,10 @@
 import argparse
 import os
-from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, TrainingArguments
-import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
 from peft import LoraConfig, TaskType, get_peft_model
 from trl import SFTTrainer
 
-from data_utils import dataset_local_load, dataset_map_merge
+from utils.data_utils import dataset_local_load, dataset_map_merge
 
 
 def load_model():

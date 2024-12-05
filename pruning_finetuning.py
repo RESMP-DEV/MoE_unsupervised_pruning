@@ -8,7 +8,7 @@ from peft import LoraConfig, TaskType, get_peft_model, PeftModel
 from trl import SFTTrainer
 from datasets import Dataset
 
-from data_utils import dataset_local_load, dataset_map_merge
+from utils.data_utils import dataset_local_load, dataset_map_merge
 
 
 def load_model(pruned_mask):

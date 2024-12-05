@@ -123,7 +123,7 @@ def merge_dataset_lists_to_json(dataset_lists, save_path):
 
 
 if __name__ == "__main__":
-    dataset_dir = "dataset"
+    dataset_dir = "../dataset"
     train_length = 5000
     valid_length = 500
     # train_valid_split_and_sample(dataset_dir, train_length, valid_length)
