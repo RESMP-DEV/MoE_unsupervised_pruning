@@ -17,7 +17,8 @@ def split_graph(cka_similarity, num_subgraphs):
     return subgraphs
 
 def hsic_split_graph(expert_data, prune_rate=0.2):
-    cka_similarity = np.zeros((expert_number, expert_number))
+    expert_num, batch_size, hidden_size = expert_data.shape
+    cka_similarity = np.zeros((expert_num, expert_num))
     for i in range(expert_number - 1):
         for j in range(i + 1, expert_number):
             i_j_sim, _ = hsic_gam(expert_data[i], expert_data[j])
@@ -27,7 +28,7 @@ def hsic_split_graph(expert_data, prune_rate=0.2):
             cka_similarity[i, j] = val
             cka_similarity[j, i] = val
 
-    num_subgraphs = int((1 - prune_rate) * expert_number)
+    num_subgraphs = int((1 - prune_rate) * expert_num)
     subgraphs = split_graph(cka_similarity, num_subgraphs)
 
     for i, subgraph in enumerate(subgraphs):
