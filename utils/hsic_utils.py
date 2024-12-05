@@ -1,6 +1,7 @@
 from utils.HSIC import hsic_gam
 
 import numpy as np
+import math
 from sklearn.cluster import SpectralClustering
 
 
@@ -18,13 +19,16 @@ def split_graph(cka_similarity, num_subgraphs):
 
 def hsic_split_graph(expert_data, prune_rate=0.2):
     expert_num, batch_size, hidden_size = expert_data.shape
-    cka_similarity = np.zeros((expert_num, expert_num))
+    cka_similarity = np.ones((expert_num, expert_num))
+    self_val = []
+    for i in range(expert_num):
+        val, _ = hsic_gam(expert_data[i], expert_data[i])
+        self_val.append(val)
+
     for i in range(expert_num - 1):
         for j in range(i + 1, expert_num):
             i_j_sim, _ = hsic_gam(expert_data[i], expert_data[j])
-            i_i_sim, _ = hsic_gam(expert_data[i], expert_data[i])
-            j_j_sim, _ = hsic_gam(expert_data[j], expert_data[j])
-            val = i_j_sim / (i_i_sim * j_j_sim)
+            val = i_j_sim / math.sqrt(self_val[i] * self_val[j])
             cka_similarity[i, j] = val
             cka_similarity[j, i] = val
 
