@@ -230,11 +230,11 @@ class PreTrainedMoEPruner:
             for subgraph in subgraphs:
                 if len(subgraph) == 1:
                     continue
-                score = scores[subgraph]
+                score = scores[:, subgraph].sum(0)
                 max_value, max_index = torch.max(score, dim=0)
-                for i in range(len(score)):
+                for i in range(len(subgraph)):
                     if i != max_index.item():
-                        self.hsic_map[idx].append(score[i].item())
+                        self.hsic_map[idx].append(subgraph[i])
             print(f"layer {idx} {self.pruning_method} pruning finish.")
 
     def dynamic_coef_compute(self, cluster_length):

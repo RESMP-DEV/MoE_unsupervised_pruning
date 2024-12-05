@@ -41,8 +41,8 @@ def hsic_split_graph(expert_data, prune_rate=0.2):
 
 
 if __name__ == '__main__':
-    expert_number = 16
+    expert_number = 60
     batch_size = 32
-    hidden_size = 64
+    hidden_size = 2048
     expert_data = np.random.rand(*(expert_number, batch_size, hidden_size))
     subgraphs = hsic_split_graph(expert_data)
