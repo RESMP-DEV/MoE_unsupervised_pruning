@@ -31,8 +31,8 @@ def hsic_split_graph(expert_data, prune_rate=0.2):
     num_subgraphs = int((1 - prune_rate) * expert_num)
     subgraphs = split_graph(cka_similarity, num_subgraphs)
 
-    for i, subgraph in enumerate(subgraphs):
-        print(f"subgraph {i + 1}: {subgraph}")
+    # for i, subgraph in enumerate(subgraphs):
+    #     print(f"subgraph {i + 1}: {subgraph}")
     return subgraphs
 
 
