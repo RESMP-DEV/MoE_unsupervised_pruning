@@ -407,7 +407,7 @@ def hsic_pruning():
     else:
         pruner.generate_hsic_map(prune_rate=prune_rate)
         with open(hsic_base_path, 'w') as f:
-            json.dump(pruner.seer_map, f)
+            json.dump(pruner.hsic_map, f)
         print(f"hsic map saved to {hsic_base_path}")
 
 
