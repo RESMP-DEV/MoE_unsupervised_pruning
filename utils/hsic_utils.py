@@ -6,7 +6,11 @@ from sklearn.cluster import SpectralClustering
 
 
 def split_graph(cka_similarity, num_subgraphs):
-    cka_similarity += 0.000001
+    i = 0
+    while (cka_similarity == 0).any():
+        assert i < 1000
+        cka_similarity += 0.000001
+        i += 1
     clustering = SpectralClustering(
         n_clusters=num_subgraphs,
         affinity='precomputed',
