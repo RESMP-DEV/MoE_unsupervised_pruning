@@ -224,7 +224,7 @@ class PreTrainedMoEPruner:
             print(f"layer {idx} experts forward finish.")
 
             experts_output = torch.stack(experts_output)  # [expert_num, bs, hidden]
-            unsupervised_data = experts_output.to(torch.float16).cpu().detach().numpy()
+            unsupervised_data = experts_output.to(torch.float32).cpu().detach().numpy()
             subgraphs = hsic_split_graph(unsupervised_data, prune_rate)
             self.hsic_map[idx] = []
             for subgraph in subgraphs:
