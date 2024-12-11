@@ -172,6 +172,7 @@ class PreTrainedMoEPruner:
                 elif self.pruning_method.startswith("hierarchical_prune"):
                     if self.pruning_method.endswith("with_entropy"):
                         basic_unsupervised_data = self.entropy_weighted(basic_unsupervised_data)
+                        print("entropy weighted compute complete.")
                     Z = linkage(basic_unsupervised_data, method="ward")
                     basic_cluster_label = fcluster(Z, t=self.cluster_number, criterion='maxclust').tolist()
                 else:
