@@ -58,6 +58,21 @@ class PreTrainedMoEPruner:
         else:
             raise NotImplementedError("Sentence embedding method has not been implemented yet.")
 
+    def entropy_weighted(self, embedding, num_bins=10):
+        entropies = []
+        for i in range(embedding.shape[1]):
+            hist, _ = np.histogram(embedding[:, i], bins=num_bins, density=True)
+            probabilities = hist / hist.sum()
+            probabilities = probabilities[probabilities > 0]
+            entropy = -np.sum(probabilities * np.log2(probabilities))
+            entropies.append(entropy)
+
+        entropies = np.array(entropies)
+        weights = 1 / (entropies + 1e-9)
+        weights /= weights.sum()
+        weighted_embedding = embedding * weights
+        return weighted_embedding
+
     def forward(self):
         print("forwarding...")
         if "prompt" in self.calibration_data.columns:
@@ -154,7 +169,9 @@ class PreTrainedMoEPruner:
                     uns = KMeans(n_clusters=self.cluster_number, random_state=0)
                     basic_cluster_result = uns.fit(basic_unsupervised_data)
                     basic_cluster_label = basic_cluster_result.labels_.tolist()
-                elif self.pruning_method == "hierarchical_prune":
+                elif self.pruning_method.startswith("hierarchical_prune"):
+                    if self.pruning_method.endswith("with_entropy"):
+                        basic_unsupervised_data = self.entropy_weighted(basic_unsupervised_data)
                     Z = linkage(basic_unsupervised_data, method="ward")
                     basic_cluster_label = fcluster(Z, t=self.cluster_number, criterion='maxclust').tolist()
                 else:
@@ -420,8 +437,8 @@ if __name__ == "__main__":
     parser.add_argument("--sample_number", type=int, default=500, help="Number of samples.")
     parser.add_argument("--cluster_number", type=int, default=6, help="Number of cluster.")
     parser.add_argument("--by_domain", type=int, default=1, help="By domain or mix")
-    parser.add_argument("--pruning_method", type=str, default="in_class_prune", help="Pruning method.")
-    parser.add_argument("--prune_rate", type=float, default=0.5, help="Pruning rate.")
+    parser.add_argument("--pruning_method", type=str, default="hierarchical_prune", help="Pruning method.")
+    parser.add_argument("--prune_rate", type=float, default=0.2, help="Pruning rate.")
     args = parser.parse_args()
 
     model_path = args.model_path
