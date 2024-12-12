@@ -154,7 +154,14 @@ class PreTrainedMoEPruner:
 
             experts_output = torch.stack(experts_output)  # [expert_num, bs, hidden]
             self.unsupervised_map[idx] = []
-            calib_dataset_length = len(self.calibration_data["prompt"])
+
+            if "prompt" in self.calibration_data.columns:
+                calib_dataset_length = len(self.calibration_data["prompt"])
+            elif "text" in self.calibration_data.columns:
+                calib_dataset_length = len(self.calibration_data["text"])
+            else:
+                raise NotImplementedError("Calibration data has no available column.")
+
             batch_total = calib_dataset_length // self.batch_size + 1
             for batch in range(batch_total):
                 start = min(batch * self.batch_size, calib_dataset_length)
