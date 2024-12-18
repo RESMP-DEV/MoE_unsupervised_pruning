@@ -33,7 +33,7 @@ def _weighted_euclidean_distance(embedding, entropies):
     embedding = embedding.reshape(embedding.shape[0], -1)
     assert embedding.shape[1] % len(weights) == 0
     mul = int(embedding.shape[1] / len(weights))
-    weights = np.concatenate([weights for _ in range(mul)], axis=1)
+    weights = np.concatenate([weights for _ in range(mul)], axis=0)
 
     def _distance_func(u, v):
         euclidean = (u - v) ** 2
