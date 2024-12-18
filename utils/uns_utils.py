@@ -16,6 +16,7 @@ def calculate_entropy(embedding, num_bins=10):
     for i in range(embedding.shape[-1]):
         hist_probabilities, _ = np.histogram(embedding[:, i], bins=num_bins, density=True)
         hist_probabilities = hist_probabilities[hist_probabilities > 0]
+        hist_probabilities = hist_probabilities / np.sum(hist_probabilities)
         entropy = -np.sum(hist_probabilities * np.log2(hist_probabilities))
         entropies.append(entropy)
     return np.array(entropies)
@@ -24,10 +25,10 @@ def calculate_entropy(embedding, num_bins=10):
 def _weighted_euclidean_distance(embedding, entropies):
     """
         embedding: ndarray. (expert_num, bs, hidden)
-        entropies: ndarray. (hidden)
+        entropies: ndarray. (hidden,)
     """
     weights = 1 / (entropies + 1e-9)
-    weights /= weights.sum(axis=1, keepdims=True)
+    weights /= weights.sum(axis=0, keepdims=True)
 
     embedding = embedding.reshape(embedding.shape[0], -1)
     assert embedding.shape[1] % len(weights) == 0
