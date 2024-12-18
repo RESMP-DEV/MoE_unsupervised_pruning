@@ -28,7 +28,7 @@ def _weighted_euclidean_distance(embedding, entropies):
         entropies: ndarray. (hidden,)
     """
     weights = 1 / (entropies + 1e-9)
-    weights = np.clip(weights, 0, 1e3)
+    weights = np.clip(weights, 0, 1e2)
     weights /= weights.sum(axis=0, keepdims=True)
 
     embedding = embedding.reshape(embedding.shape[0], -1)
@@ -37,7 +37,7 @@ def _weighted_euclidean_distance(embedding, entropies):
     weights = np.concatenate([weights for _ in range(mul)], axis=0)
 
     def _distance_func(u, v):
-        euclidean = (u - v) ** 2
+        euclidean = np.clip(u - v, -1e2, 1e2) ** 2
         weighed_euclidean = weights * euclidean
         return np.sqrt(np.sum(weighed_euclidean))
 
