@@ -2,8 +2,6 @@ import argparse
 import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
-from sklearn.cluster import KMeans
-from scipy.cluster.hierarchy import linkage, fcluster
 from datasets import load_dataset
 import pandas as pd
 import numpy as np
@@ -13,6 +11,7 @@ import math
 
 from utils.data_utils import dataset_local_load
 from utils.hsic_utils import hsic_split_graph
+from utils.uns_utils import calculate_entropy, cluster_for_prune
 
 
 def domain_calibration_generation(dataset_dir, dataset_name, sample_number=50):
@@ -57,21 +56,6 @@ class PreTrainedMoEPruner:
             return emb.mean(1)
         else:
             raise NotImplementedError("Sentence embedding method has not been implemented yet.")
-
-    def entropy_weighted(self, embedding, num_bins=10):
-        entropies = []
-        for i in range(embedding.shape[1]):
-            hist, _ = np.histogram(embedding[:, i], bins=num_bins, density=True)
-            probabilities = hist / hist.sum()
-            probabilities = probabilities[probabilities > 0]
-            entropy = -np.sum(probabilities * np.log2(probabilities))
-            entropies.append(entropy)
-
-        entropies = np.array(entropies)
-        weights = 1 / (entropies + 1e-9)
-        weights /= weights.sum()
-        weighted_embedding = embedding * weights
-        return weighted_embedding
 
     def forward(self):
         print("forwarding...")
@@ -152,8 +136,7 @@ class PreTrainedMoEPruner:
 
             print(f"layer {idx} experts forward finish.")
 
-            experts_output = torch.stack(experts_output)  # [expert_num, bs, hidden]
-            self.unsupervised_map[idx] = []
+            experts_output = torch.stack(experts_output)  # (expert_num, bs, hidden)
 
             if "prompt" in self.calibration_data.columns:
                 calib_dataset_length = len(self.calibration_data["prompt"])
@@ -162,6 +145,12 @@ class PreTrainedMoEPruner:
             else:
                 raise NotImplementedError("Calibration data has no available column.")
 
+            entropy = None
+            if self.pruning_method.endswith("with_entropy"):
+                emb = experts_output.permute(1, 0, 2)  # (bs, expert_num, hidden)
+                entropy = calculate_entropy(emb)
+
+            self.unsupervised_map[idx] = []
             batch_total = calib_dataset_length // self.batch_size + 1
             for batch in range(batch_total):
                 start = min(batch * self.batch_size, calib_dataset_length)
@@ -169,21 +158,11 @@ class PreTrainedMoEPruner:
                 if end == start:
                     continue
 
-                basic_output = experts_output[:, start:end, :].view(len(experts), -1).to(torch.float16)
                 basic_score = scores[start:end, :].mean(0).tolist()
+                basic_output = experts_output[:, start:end, :].to(torch.float16)
                 basic_unsupervised_data = basic_output.cpu().detach().numpy()
-                if self.pruning_method == "kmeans_prune":
-                    uns = KMeans(n_clusters=self.cluster_number, random_state=0)
-                    basic_cluster_result = uns.fit(basic_unsupervised_data)
-                    basic_cluster_label = basic_cluster_result.labels_.tolist()
-                elif self.pruning_method.startswith("hierarchical_prune"):
-                    if self.pruning_method.endswith("with_entropy"):
-                        basic_unsupervised_data = self.entropy_weighted(basic_unsupervised_data)
-                    Z = linkage(basic_unsupervised_data, method="ward")
-                    basic_cluster_label = fcluster(Z, t=self.cluster_number, criterion='maxclust').tolist()
-                else:
-                    raise NotImplementedError("Unsupervised pruning method has not been implemented yet.")
 
+                basic_cluster_label = cluster_for_prune(basic_unsupervised_data, cluster_number, pruning_method=self.pruning_method, entropy=entropy)
                 basic_cluster_final_result = [(basic_cluster_label[i], basic_score[i]) for i in
                                               range(len(basic_cluster_label))]
                 self.unsupervised_map[idx].append(basic_cluster_final_result)
