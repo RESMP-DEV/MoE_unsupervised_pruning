@@ -148,7 +148,7 @@ class PreTrainedMoEPruner:
             entropy = None
             if self.pruning_method.endswith("with_entropy"):
                 emb = experts_output.permute(1, 0, 2)  # (bs, expert_num, hidden)
-                entropy = calculate_entropy(emb)
+                entropy = calculate_entropy(emb.to(torch.float16))
 
             self.unsupervised_map[idx] = []
             batch_total = calib_dataset_length // self.batch_size + 1
