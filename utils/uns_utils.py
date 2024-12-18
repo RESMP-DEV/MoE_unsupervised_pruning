@@ -40,7 +40,7 @@ def _weighted_euclidean_distance(embedding, entropies):
         weighed_euclidean = weights * euclidean
         return np.sqrt(np.sum(weighed_euclidean))
 
-    dist_matrix = squareform(pdist(embedding, metric=_distance_func))
+    dist_matrix = pdist(embedding, metric=_distance_func)
     return dist_matrix
 
 
