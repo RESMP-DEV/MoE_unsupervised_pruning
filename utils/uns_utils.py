@@ -31,7 +31,6 @@ def _weighted_euclidean_distance(embedding, entropies):
     weights = np.clip(weights, 0, 1e2)
     weights /= weights.sum(axis=0, keepdims=True)
 
-    embedding = embedding.reshape(embedding.shape[0], -1)
     assert embedding.shape[1] % len(weights) == 0
     mul = int(embedding.shape[1] / len(weights))
     weights = np.concatenate([weights for _ in range(mul)], axis=0)
@@ -52,9 +51,9 @@ def cluster_for_prune(embedding, cluster_number, pruning_method="hierarchical_pr
             entropies: ndarray. (hidden,)
     """
     expert_num, bs, hidden = embedding.shape
+    embedding = embedding.reshape(expert_num, -1)
     if pruning_method == "kmeans_prune":
         uns = KMeans(n_clusters=cluster_number, random_state=0)
-        embedding = embedding.reshape(expert_num, -1)
         basic_cluster_result = uns.fit(embedding)
         basic_cluster_label = basic_cluster_result.labels_.tolist()
     elif pruning_method.startswith("hierarchical_prune"):
