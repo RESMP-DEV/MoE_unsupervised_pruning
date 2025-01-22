@@ -52,20 +52,41 @@ def cluster_for_prune(embedding, cluster_number, pruning_method="hierarchical_pr
     """
     expert_num, bs, hidden = embedding.shape
     embedding = embedding.reshape(expert_num, -1)
-    if pruning_method == "kmeans_prune":
+    if "kmeans" in pruning_method:
         uns = KMeans(n_clusters=cluster_number, random_state=0)
         basic_cluster_result = uns.fit(embedding)
         basic_cluster_label = basic_cluster_result.labels_.tolist()
-    elif pruning_method.startswith("hierarchical_prune"):
-        if pruning_method.endswith("with_entropy"):
+
+        cluster_centers = uns.cluster_centers_
+        distances_to_center = []
+        for i in range(len(embedding)):
+            distances_to_center.append(np.linalg.norm(embedding[i] - cluster_centers[basic_cluster_label[i]]))
+        distances_to_center = np.array(distances_to_center, dtype=float)
+
+    elif "hierarchical" in pruning_method:
+        if pruning_method.startswith("entropy"):
             assert "entropy" in kwargs
             dist_matrix = _weighted_euclidean_distance(embedding, kwargs["entropy"])
         else:
             dist_matrix = squareform(pdist(embedding))
         Z = linkage(dist_matrix, method="ward")
         basic_cluster_label = fcluster(Z, t=cluster_number, criterion='maxclust').tolist()
+
+        cluster_centers = []
+        for cluster_id in range(1, cluster_number + 1):
+            cluster_samples = embedding[np.array(basic_cluster_label) == cluster_id]
+            cluster_center = np.mean(cluster_samples, axis=0)
+            cluster_centers.append(cluster_center)
+        cluster_centers = np.array(cluster_centers)
+
+        distances_to_center = []
+        for i, sample in enumerate(embedding):
+            cluster_id = basic_cluster_label[i] - 1
+            distance = np.linalg.norm(sample - cluster_centers[cluster_id])
+            distances_to_center.append(distance)
+        distances_to_center = np.array(distances_to_center, dtype=float)
+
     else:
         raise NotImplementedError("Unsupervised pruning method has not been implemented yet.")
 
-    return basic_cluster_label
-
+    return (basic_cluster_label, distances_to_center)
