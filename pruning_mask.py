@@ -371,10 +371,13 @@ class PreTrainedMoEPruner:
             self.global_pruned_map[layer_idx].append(int(remain_experts[expert_idx]))
 
         # merge with layerwise result
-        for layer_idx, prune_list in self.global_pruned_map.items():
-            layerwise_prune_list = self.layerwise_pruned_map[str(layer_idx)]
-            assert not set(layerwise_prune_list) & set(prune_list)
-            self.global_pruned_map[layer_idx] = sorted(layerwise_prune_list + prune_list)
+        for layer_idx, prune_list in self.layerwise_pruned_map.items():
+            if str(layer_idx) in self.global_pruned_map:
+                global_prune_list = self.global_pruned_map[str(layer_idx)]
+                assert not set(global_prune_list) & set(prune_list)
+                self.global_pruned_map[layer_idx] = sorted(global_prune_list + prune_list)
+            else:
+                self.global_pruned_map[layer_idx] = sorted(prune_list)
 
 
 def domain_pruning():
