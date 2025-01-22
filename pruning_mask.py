@@ -42,15 +42,13 @@ def c4_calibration_generation(dataset_path, sample_number=1000):
 
 class PreTrainedMoEPruner:
     def __init__(self, model, tokenizer, calibration_data, batch_size=16, layerwise_pruning_method="hierarchical_prune",
-                 global_pruning_method="hierarchical_prune",
-                 cluster_number=12, sentence_emd="avg_pooling"):
+                 global_pruning_method="hierarchical_prune", sentence_emd="avg_pooling"):
         self.model = model.model
         self.tokenizer = tokenizer
         self.calibration_data = calibration_data
         self.batch_size = batch_size
         self.layerwise_pruning_method = layerwise_pruning_method
         self.global_pruning_method = global_pruning_method
-        self.cluster_number = cluster_number
         self.sentence_emd = sentence_emd
         self.device = model.device
 
@@ -60,6 +58,19 @@ class PreTrainedMoEPruner:
             return emb.mean(1)
         else:
             raise NotImplementedError("Sentence embedding method has not been implemented yet.")
+
+    def dynamic_coef_compute(self, cluster_length):
+        if hasattr(self.model.config, "n_routed_experts"):
+            total_expert_num = self.model.config.n_routed_experts
+        elif hasattr(self.model.config, "num_experts"):
+            total_expert_num = self.model.config.num_experts
+        else:
+            raise AttributeError("No suitable attribute representing number of experts")
+        length_pctg = cluster_length / total_expert_num
+        dynamic_coef = math.exp(0.5 - length_pctg) - math.exp(length_pctg - 0.5) / (math.exp(length_pctg - 0.5) + math.exp(0.5 - length_pctg))
+        dynamic_coef *= 0.6
+        dynamic_coef = dynamic_coef + 0.5
+        return dynamic_coef
 
     def forward(self):
         print("forwarding...")
@@ -114,10 +125,10 @@ class PreTrainedMoEPruner:
 
                 assert len(self.pre_ffn_hidden_states) == len(self.model.layers)
 
-    def generate_layerwise_unsupervised_map(self, expert_output_save_dir=None):
+    def generate_layerwise_unsupervised_map(self, cluster_number, expert_output_save_dir):
         # expert score compute
-        print("unsupervise pruning...")
-        self.unsupervised_map = {}
+        print("layerwise unsupervising...")
+        self.layerwise_unsupervised_map = {}
         for idx, hidden_state in enumerate(self.pre_ffn_hidden_states):
             if "MLP" in str(type(self.model.layers[idx].mlp)):
                 continue
@@ -141,13 +152,12 @@ class PreTrainedMoEPruner:
             print(f"layer {idx} experts forward finish.")
 
             experts_output = torch.stack(experts_output)  # (expert_num, bs, hidden)
-            if expert_output_save_dir:
-                expert_output_save_path = f"{expert_output_save_dir}/layer_{idx}.pth"
-                if not os.path.exists(expert_output_save_path):
-                    torch.save(experts_output, expert_output_save_path)
-                    print(f"layer {idx} expert output save finish.")
-                else:
-                    print(f"layer {idx} expert output has already existed.")
+            expert_output_save_path = f"{expert_output_save_dir}/layer_{idx}.pth"
+            if not os.path.exists(expert_output_save_path):
+                torch.save(experts_output, expert_output_save_path)
+                print(f"layer {idx} expert output save finish.")
+            else:
+                print(f"layer {idx} expert output has already existed.")
 
             if "prompt" in self.calibration_data.columns:
                 calib_dataset_length = len(self.calibration_data["prompt"])
@@ -161,7 +171,7 @@ class PreTrainedMoEPruner:
                 emb = experts_output.permute(1, 0, 2)  # (bs, expert_num, hidden)
                 entropy = calculate_entropy(emb.to(torch.float16))
 
-            self.unsupervised_map[idx] = []
+            self.layerwise_unsupervised_map[idx] = []
             batch_total = calib_dataset_length // self.batch_size + 1
             for batch in range(batch_total):
                 start = min(batch * self.batch_size, calib_dataset_length)
@@ -173,11 +183,131 @@ class PreTrainedMoEPruner:
                 basic_output = experts_output[:, start:end, :].to(torch.float16)
                 basic_unsupervised_data = basic_output.cpu().detach().numpy()
 
-                basic_cluster_label, distances_to_center = cluster_for_prune(basic_unsupervised_data, self.cluster_number, pruning_method=self.layerwise_pruning_method, entropy=entropy)
+                basic_cluster_label, distances_to_center = cluster_for_prune(basic_unsupervised_data, cluster_number, pruning_method=self.layerwise_pruning_method, entropy=entropy)
                 basic_cluster_final_result = [(basic_cluster_label[i], distances_to_center[i]) for i in
                                               range(len(basic_cluster_label))]
-                self.unsupervised_map[idx].append(basic_cluster_final_result)
+                self.layerwise_unsupervised_map[idx].append(basic_cluster_final_result)
             print(f"layer {idx} {self.layerwise_pruning_method} unsupervised learning finish.")
+
+    def generate_layerwise_pruned_map(self, prune_rate=0.2):
+        print("layerwise pruning...")
+        assert self.layerwise_unsupervised_map is not None, "No existed layerwise unsupervised map."
+        self.layerwise_pruned_map = {}
+        self.selected_expert_map = {}
+        for layer_idx, cluster_info in self.layerwise_unsupervised_map.items():
+            selected_expert_map = {i:0 for i in range(len(cluster_info[0]))}
+            for b_idx, batch_cluster_info in enumerate(cluster_info):
+                cluster_map = {}
+                for expert_idx, (cluster_label, score) in enumerate(batch_cluster_info):
+                    if cluster_label not in cluster_map:
+                        cluster_map[cluster_label] = {}
+                    cluster_map[cluster_label][expert_idx] = score
+
+                for cluster_label, cluster_result_info in cluster_map.items():
+                    cluster_length = len(cluster_result_info)
+
+                    if cluster_length < 3:
+                        selected_cluster_info = cluster_result_info.items()
+                    else:
+                        dynamic_coef = self.dynamic_coef_compute(cluster_length)
+                        selected_cluster_info = sorted(cluster_result_info.items(), key=lambda x: x[1])[
+                                              :int(dynamic_coef * (1 - prune_rate) * cluster_length)]
+                    for (selected_expert_idx, selected_expert_score) in selected_cluster_info:
+                        selected_expert_map[selected_expert_idx] += 1
+
+            self.selected_expert_map[layer_idx] = selected_expert_map
+            pruned_experts = sorted(selected_expert_map.items(), key=lambda x: x[1])[:int(prune_rate * len(selected_expert_map))]
+            self.layerwise_pruned_map[layer_idx] = sorted([info[0] for info in pruned_experts])
+
+    def prepare_for_global_unsupervised_pruning(self, expert_output_save_dir):
+        remain_experts = {}
+        expert_outputs = {}
+        prune_length = None
+        for idx in range(len(self.model.layers)):
+            if "MLP" in str(type(self.model.layers[idx].mlp)):
+                continue
+
+            expert_output_save_path = f"{expert_output_save_dir}/layer_{idx}.pth"
+            expert_output = torch.load(expert_output_save_path)  # (expert_num, bs, hidden)
+            layerwise_pruned_expert = sorted(self.layerwise_pruned_map[str(idx)])
+            if prune_length is None:
+                prune_length = len(layerwise_pruned_expert)
+            else:
+                assert prune_length == len(layerwise_pruned_expert), "layerwise pruning length does not match."
+            all_expert = torch.arange(expert_output.shape[0])
+            remain_expert = all_expert[~torch.isin(all_expert, torch.tensor(layerwise_pruned_expert))]
+            remain_experts[idx] = remain_expert
+            remain_expert_output = expert_output[remain_expert]
+            expert_outputs[idx] = remain_expert_output
+
+        self.remain_experts_list = sorted(remain_experts.items(), key=lambda x: x[0])
+        expert_outputs_list = [ele[1] for ele in sorted(expert_outputs.items(), key=lambda x: x[0])]
+        self.expert_outputs = torch.cat(expert_outputs_list, dim=0)
+
+    def generate_global_unsupervised_result(self, cluster_number):
+        print("global unsupervising...")
+        self.global_unsupervised_result = []
+        dataset_length = self.expert_outputs.size()[1]
+        batch_total = dataset_length // self.batch_size + 1
+        for batch in range(batch_total):
+            start = min(batch * self.batch_size, dataset_length)
+            end = min((batch + 1) * self.batch_size, dataset_length)
+            if end == start:
+                continue
+
+            basic_output = self.expert_outputs[:, start:end, :].to(torch.float16)
+            basic_unsupervised_data = basic_output.cpu().detach().numpy()
+
+            basic_cluster_label, distances_to_center = cluster_for_prune(basic_unsupervised_data, cluster_number, pruning_method=self.global_pruning_method)
+            basic_cluster_final_result = [(basic_cluster_label[i], distances_to_center[i]) for i in
+                                          range(len(basic_cluster_label))]
+            self.global_unsupervised_result.append(basic_cluster_final_result)
+            print(f"batch {batch}/{batch_total} done")
+
+    def generate_global_pruned_map(self, prune_rate=0.2):
+        assert self.remain_experts_list is not None, "No existed remain expert list."
+        assert self.global_unsupervised_result is not None, "No existed global unsupervised result."
+
+        layerwise_remain_length = len(self.remain_experts_list[0][1])
+        experts_num = len(self.remain_experts_list) * layerwise_remain_length
+        selected_global_expert_map = {i: 0 for i in range(experts_num)}
+        for b_idx, batch_cluster_info in enumerate(self.global_unsupervised_result):
+            cluster_map = {}
+            for cross_layer_expert_idx, (cluster_label, score) in enumerate(batch_cluster_info):
+                if cluster_label not in cluster_map:
+                    cluster_map[cluster_label] = {}
+                cluster_map[cluster_label][cross_layer_expert_idx] = score
+
+            for cluster_label, cluster_result_info in cluster_map.items():
+                cluster_length = len(cluster_result_info)
+
+                if cluster_length < 3:
+                    selected_cluster_info = cluster_result_info.items()
+                else:
+                    dynamic_coef = self.dynamic_coef_compute(cluster_length)
+                    selected_cluster_info = sorted(cluster_result_info.items(), key=lambda x: x[1])[
+                                            :int(dynamic_coef * (1 - prune_rate) * cluster_length)]
+                for (selected_expert_idx, selected_expert_score) in selected_cluster_info:
+                    selected_global_expert_map[selected_expert_idx] += 1
+
+        pruned_experts = sorted(selected_global_expert_map.items(), key=lambda x: x[1])[:int(prune_rate * experts_num)]
+        self.global_pruned_map = {}
+        for (idx, _) in pruned_experts:
+            loc = idx // layerwise_remain_length
+            layer_idx, remain_experts = self.remain_experts_list[loc]
+            expert_idx = idx % layerwise_remain_length
+            if layer_idx not in self.global_pruned_map:
+                self.global_pruned_map[layer_idx] = []
+            self.global_pruned_map[layer_idx].append(int(remain_experts[expert_idx]))
+
+        # merge with layerwise result
+        for layer_idx, prune_list in self.layerwise_pruned_map.items():
+            if str(layer_idx) in self.global_pruned_map:
+                global_prune_list = self.global_pruned_map[str(layer_idx)]
+                assert not set(global_prune_list) & set(prune_list)
+                self.global_pruned_map[layer_idx] = sorted(global_prune_list + prune_list)
+            else:
+                self.global_pruned_map[layer_idx] = sorted(prune_list)
 
     def seer_prune(self, prune_rate=0.2):
         print("seer pruning...")
@@ -251,140 +381,12 @@ class PreTrainedMoEPruner:
                         self.hsic_map[idx].append(subgraph[i])
             print(f"layer {idx} {self.layerwise_pruning_method} pruning finish.")
 
-    def dynamic_coef_compute(self, cluster_length):
-        if hasattr(self.model.config, "n_routed_experts"):
-            total_expert_num = self.model.config.n_routed_experts
-        elif hasattr(self.model.config, "num_experts"):
-            total_expert_num = self.model.config.num_experts
-        else:
-            raise AttributeError("No suitable attribute representing number of experts")
-        length_pctg = cluster_length / total_expert_num
-        dynamic_coef = math.exp(0.5 - length_pctg) - math.exp(length_pctg - 0.5) / (math.exp(length_pctg - 0.5) + math.exp(0.5 - length_pctg))
-        dynamic_coef *= 0.6
-        dynamic_coef = dynamic_coef + 0.5
-        return dynamic_coef
-
-    def generate_layerwise_pruned_map(self, prune_rate=0.2):
-        print("layerwise pruning...")
-        if self.unsupervised_map is None:
-            raise ValueError("No existed unsupervised map.")
-        self.layerwise_pruned_map = {}
-        self.selected_expert_map = {}
-        for layer_idx, cluster_info in self.unsupervised_map.items():
-            selected_expert_map = {i:0 for i in range(len(cluster_info[0]))}
-            for b_idx, batch_cluster_info in enumerate(cluster_info):
-                cluster_map = {}
-                for expert_idx, (cluster_label, score) in enumerate(batch_cluster_info):
-                    if cluster_label not in cluster_map:
-                        cluster_map[cluster_label] = {}
-                    cluster_map[cluster_label][expert_idx] = score
-
-                for cluster_label, cluster_result_info in cluster_map.items():
-                    cluster_length = len(cluster_result_info)
-
-                    if cluster_length < 3:
-                        selected_cluster_info = cluster_result_info.items()
-                    else:
-                        dynamic_coef = self.dynamic_coef_compute(cluster_length)
-                        selected_cluster_info = sorted(cluster_result_info.items(), key=lambda x: x[1])[
-                                              :int(dynamic_coef * (1 - prune_rate) * cluster_length)]
-                    for (selected_expert_idx, selected_expert_score) in selected_cluster_info:
-                        selected_expert_map[selected_expert_idx] += 1
-
-            self.selected_expert_map[layer_idx] = selected_expert_map
-            pruned_experts = sorted(selected_expert_map.items(), key=lambda x: x[1])[:int(prune_rate * len(selected_expert_map))]
-            self.layerwise_pruned_map[layer_idx] = sorted([info[0] for info in pruned_experts])
-
-    def generate_global_pruned_map(self, expert_output_save_dir, prune_rate=0.2):
-        remain_experts = {}
-        expert_outputs = {}
-        layerwise_remain_length = None
-        for idx in range(len(self.model.layers)):
-            if "MLP" in str(type(self.model.layers[idx].mlp)):
-                continue
-
-            expert_output_save_path = f"{expert_output_save_dir}/layer_{idx}.pth"
-            expert_output = torch.load(expert_output_save_path)  # (expert_num, bs, hidden)
-            layerwise_pruned_expert = sorted(self.layerwise_pruned_map[str(idx)])
-            if layerwise_remain_length is None:
-                layerwise_remain_length = expert_output.shape[0] - len(layerwise_pruned_expert)
-            else:
-                assert layerwise_remain_length == expert_output.shape[0] - len(layerwise_pruned_expert)
-            all_expert = torch.arange(expert_output.shape[0])
-            remain_expert = all_expert[~torch.isin(all_expert, torch.tensor(layerwise_pruned_expert))]
-            remain_experts[idx] = remain_expert
-            remain_expert_output = expert_output[remain_expert]
-            expert_outputs[idx] = remain_expert_output
-
-        remain_experts_list = sorted(remain_experts.items(), key=lambda x: x[0])
-        expert_outputs_list = [ele[1] for ele in sorted(expert_outputs.items(), key=lambda x: x[0])]
-        expert_outputs = torch.cat(expert_outputs_list, dim=0)
-
-        print("global pruning...")
-        unsupervised_cross_layer_cluster_result = []
-        experts_num, dataset_length, hidden_size = expert_outputs.size()
-        batch_total = dataset_length // self.batch_size + 1
-        for batch in range(batch_total):
-            start = min(batch * self.batch_size, dataset_length)
-            end = min((batch + 1) * self.batch_size, dataset_length)
-            if end == start:
-                continue
-
-            basic_output = expert_outputs[:, start:end, :].to(torch.float16)
-            basic_unsupervised_data = basic_output.cpu().detach().numpy()
-
-            basic_cluster_label, distances_to_center = cluster_for_prune(basic_unsupervised_data, self.cluster_number,
-                                                                         pruning_method=self.global_pruning_method)
-            basic_cluster_final_result = [(basic_cluster_label[i], distances_to_center[i]) for i in
-                                          range(len(basic_cluster_label))]
-            unsupervised_cross_layer_cluster_result.append(basic_cluster_final_result)
-            print(f"batch {batch}/{batch_total} done")
-
-        selected_global_expert_map = {i: 0 for i in range(experts_num)}
-        for b_idx, batch_cluster_info in enumerate(unsupervised_cross_layer_cluster_result):
-            cluster_map = {}
-            for cross_layer_expert_idx, (cluster_label, score) in enumerate(batch_cluster_info):
-                if cluster_label not in cluster_map:
-                    cluster_map[cluster_label] = {}
-                cluster_map[cluster_label][cross_layer_expert_idx] = score
-
-            for cluster_label, cluster_result_info in cluster_map.items():
-                cluster_length = len(cluster_result_info)
-
-                if cluster_length < 3:
-                    selected_cluster_info = cluster_result_info.items()
-                else:
-                    dynamic_coef = self.dynamic_coef_compute(cluster_length)
-                    selected_cluster_info = sorted(cluster_result_info.items(), key=lambda x: x[1])[
-                                            :int(dynamic_coef * (1 - prune_rate) * cluster_length)]
-                for (selected_expert_idx, selected_expert_score) in selected_cluster_info:
-                    selected_global_expert_map[selected_expert_idx] += 1
-
-        pruned_experts = sorted(selected_global_expert_map.items(), key=lambda x: x[1])[:int(prune_rate * experts_num)]
-        self.global_pruned_map = {}
-        for (idx, _) in pruned_experts:
-            loc = idx // layerwise_remain_length
-            layer_idx, remain_experts = remain_experts_list[loc]
-            expert_idx = idx % layerwise_remain_length
-            if layer_idx not in self.global_pruned_map:
-                self.global_pruned_map[layer_idx] = []
-            self.global_pruned_map[layer_idx].append(int(remain_experts[expert_idx]))
-
-        # merge with layerwise result
-        for layer_idx, prune_list in self.layerwise_pruned_map.items():
-            if str(layer_idx) in self.global_pruned_map:
-                global_prune_list = self.global_pruned_map[str(layer_idx)]
-                assert not set(global_prune_list) & set(prune_list)
-                self.global_pruned_map[layer_idx] = sorted(global_prune_list + prune_list)
-            else:
-                self.global_pruned_map[layer_idx] = sorted(prune_list)
-
 
 def domain_pruning():
     print("Domain Pruning...")
-    base_path = f"pruned_result/{model_name}/sample_{sample_number}_cluster_{cluster_number}/{layerwise_pruning_method}"
-    if not os.path.exists(base_path):
-        os.makedirs(base_path)
+    base_dir = f"pruned_result/{model_name}/sample_{sample_number}/cluster_{layerwise_cluster_number}/{layerwise_pruning_method}"
+    if not os.path.exists(base_dir):
+        os.makedirs(base_dir)
 
     for dataset_name in dataset_name_list:
         print(f"Dataset: {dataset_name}")
@@ -392,25 +394,24 @@ def domain_pruning():
         pruner = PreTrainedMoEPruner(model, tokenizer, train_df,
                                      batch_size=batch_size,
                                      layerwise_pruning_method=layerwise_pruning_method,
-                                     global_pruning_method=global_pruning_method,
-                                     cluster_number=cluster_number)
+                                     global_pruning_method=global_pruning_method)
 
-        unsupervised_save_path = f"{base_path}/{dataset_name}_unsupervised.json"
-        expert_output_save_dir = f"{base_path}/{dataset_name}_expert_output_hidden"
+        layerwise_unsupervised_save_path = f"{base_dir}/{dataset_name}_unsupervised.json"
+        expert_output_save_dir = f"{base_dir}/{dataset_name}_expert_output_hidden"
         if not os.path.exists(expert_output_save_dir):
             os.makedirs(expert_output_save_dir)
-        if os.path.exists(unsupervised_save_path):
-            with open(unsupervised_save_path, 'r') as f:
-                pruner.unsupervised_map = json.load(f)
-            print(f"unsupervised map is loaded from {unsupervised_save_path}")
+        if os.path.exists(layerwise_unsupervised_save_path):
+            with open(layerwise_unsupervised_save_path, 'r') as f:
+                pruner.layerwise_unsupervised_map = json.load(f)
+            print(f"layerwise unsupervised map is loaded from {layerwise_unsupervised_save_path}")
         else:
             pruner.forward()
-            pruner.generate_layerwise_unsupervised_map(expert_output_save_dir)
-            with open(unsupervised_save_path, 'w') as f:
-                json.dump(pruner.unsupervised_map, f)
-            print(f"unsupervised map saved to {unsupervised_save_path}")
+            pruner.generate_layerwise_unsupervised_map(layerwise_cluster_number, expert_output_save_dir)
+            with open(layerwise_unsupervised_save_path, 'w') as f:
+                json.dump(pruner.layerwise_unsupervised_map, f)
+            print(f"layerwise unsupervised map saved to {layerwise_unsupervised_save_path}")
 
-        layerwise_prune_save_dir = f"{base_path}/rate_{layerwise_prune_rate}"
+        layerwise_prune_save_dir = f"{base_dir}/rate_{layerwise_prune_rate}"
         if not os.path.exists(layerwise_prune_save_dir):
             os.makedirs(layerwise_prune_save_dir)
         layerwise_prune_save_file_path = f"{layerwise_prune_save_dir}/{dataset_name}_prune.json"
@@ -426,7 +427,22 @@ def domain_pruning():
             print(f"layerwise pruned map saved to {layerwise_prune_save_file_path}")
 
         if global_pruning_method:
-            global_prune_save_dir = f"{base_path}/rate_{layerwise_prune_rate}/rate_{global_prune_rate}"
+            global_unsupervised_save_dir = f"{layerwise_prune_save_dir}/cluster_{global_cluster_number}/{global_pruning_method}"
+            if not os.path.exists(global_unsupervised_save_dir):
+                os.makedirs(global_unsupervised_save_dir)
+            pruner.prepare_for_global_unsupervised_pruning(expert_output_save_dir)
+            global_unsupervised_save_path = f"{global_unsupervised_save_dir}/{dataset_name}_unsupervised.json"
+            if os.path.exists(global_unsupervised_save_path):
+                with open(global_unsupervised_save_path, 'r') as f:
+                    pruner.global_unsupervised_result = json.load(f)
+                print(f"global unsupervised map is loaded from {global_unsupervised_save_path}")
+            else:
+                pruner.generate_global_unsupervised_result(global_cluster_number)
+                with open(global_unsupervised_save_path, 'w') as f:
+                    json.dump(pruner.global_unsupervised_result, f)
+                print(f"global unsupervised map saved to {global_unsupervised_save_path}")
+
+            global_prune_save_dir = f"{global_unsupervised_save_dir}/rate_{global_prune_rate}"
             if not os.path.exists(global_prune_save_dir):
                 os.makedirs(global_prune_save_dir)
             global_prune_save_file_path = f"{global_prune_save_dir}/{dataset_name}_prune.json"
@@ -436,7 +452,7 @@ def domain_pruning():
                 print(f"global pruned map is loaded from {global_prune_save_file_path}")
             else:
                 print(f"global pruning_method: {global_pruning_method}, prune_rate: {global_prune_rate}")
-                pruner.generate_global_pruned_map(expert_output_save_dir, prune_rate=global_prune_rate)
+                pruner.generate_global_pruned_map(prune_rate=global_prune_rate)
                 with open(global_prune_save_file_path, 'w') as f:
                     json.dump(pruner.global_pruned_map, f)
                 print(f"global pruned map saved to {global_prune_save_file_path}")
@@ -444,9 +460,9 @@ def domain_pruning():
 
 def agnostic_pruning():
     print("Agnostic Pruning...")
-    base_path = f"pruned_result/{model_name}/sample_{sample_number}_cluster_{cluster_number}/{layerwise_pruning_method}"
-    if not os.path.exists(base_path):
-        os.makedirs(base_path)
+    base_dir = f"pruned_result/{model_name}/sample_{sample_number}/cluster_{layerwise_cluster_number}/{layerwise_pruning_method}"
+    if not os.path.exists(base_dir):
+        os.makedirs(base_dir)
 
     assert len(dataset_name_list) == 1
     dataset_name = None
@@ -462,35 +478,36 @@ def agnostic_pruning():
     pruner = PreTrainedMoEPruner(model, tokenizer, train_df,
                                  batch_size=batch_size,
                                  layerwise_pruning_method=layerwise_pruning_method,
-                                 global_pruning_method=global_pruning_method,
-                                 cluster_number=cluster_number)
-    pruner.forward()
-    unsupervised_save_path = f"{base_path}/{dataset_name_list[0]}_unsupervised.json"
-    expert_output_save_dir = f"{base_path}/{dataset_name_list[0]}_expert_output_hidden"
+                                 global_pruning_method=global_pruning_method)
+    layerwise_unsupervised_save_path = f"{base_dir}/{dataset_name_list[0]}_unsupervised.json"
+    expert_output_save_dir = f"{base_dir}/{dataset_name_list[0]}_expert_output_hidden"
     if not os.path.exists(expert_output_save_dir):
         os.makedirs(expert_output_save_dir)
-    if os.path.exists(unsupervised_save_path):
-        with open(unsupervised_save_path, 'r') as f:
-            pruner.unsupervised_map = json.load(f)
-        print(f"unsupervised map is loaded from {unsupervised_save_path}")
+    if os.path.exists(layerwise_unsupervised_save_path):
+        with open(layerwise_unsupervised_save_path, 'r') as f:
+            pruner.layerwise_unsupervised_map = json.load(f)
+        print(f"unsupervised map is loaded from {layerwise_unsupervised_save_path}")
     else:
-        pruner.generate_layerwise_unsupervised_map(expert_output_save_dir)
-        with open(unsupervised_save_path, 'w') as f:
-            json.dump(pruner.unsupervised_map, f)
-        print(f"unsupervised map saved to {unsupervised_save_path}")
+        pruner.forward()
+        pruner.generate_layerwise_unsupervised_map(layerwise_cluster_number, expert_output_save_dir)
+        with open(layerwise_unsupervised_save_path, 'w') as f:
+            json.dump(pruner.layerwise_unsupervised_map, f)
+        print(f"unsupervised map saved to {layerwise_unsupervised_save_path}")
 
-    prune_save_dir = f"{base_path}/rate_{layerwise_prune_rate}"
-    if not os.path.exists(prune_save_dir):
-        os.makedirs(prune_save_dir)
-    prune_save_file_path = f"{prune_save_dir}/{dataset_name_list[0]}_prune.json"
-    if os.path.exists(prune_save_file_path):
-        print(f"pruned map is located at {prune_save_file_path}")
+    layerwise_prune_save_dir = f"{base_dir}/rate_{layerwise_prune_rate}"
+    if not os.path.exists(layerwise_prune_save_dir):
+        os.makedirs(layerwise_prune_save_dir)
+    layerwise_prune_save_file_path = f"{layerwise_prune_save_dir}/{dataset_name_list[0]}_prune.json"
+    if os.path.exists(layerwise_prune_save_file_path):
+        with open(layerwise_prune_save_file_path, 'r') as f:
+            pruner.layerwise_pruned_map = json.load(f)
+        print(f"layerwise pruned map is loaded from {layerwise_prune_save_file_path}")
     else:
         print(f"layerwise pruning_method: {layerwise_pruning_method}, prune_rate: {layerwise_prune_rate}")
         pruner.generate_layerwise_pruned_map(prune_rate=layerwise_prune_rate)
-        with open(prune_save_file_path, 'w') as f:
-            json.dump(pruner.pruned_map, f)
-        print(f"layerwise pruned map saved to {prune_save_file_path}")
+        with open(layerwise_prune_save_file_path, 'w') as f:
+            json.dump(pruner.layerwise_pruned_map, f)
+        print(f"layerwise pruned map saved to {layerwise_prune_save_file_path}")
 
     if global_pruning_method:
         raise NotImplementedError("Global pruning has not support for agnostic pruning")
@@ -498,9 +515,9 @@ def agnostic_pruning():
 
 def seer_pruning():
     print("Seer Pruning...")
-    base_path = f"pruned_result/{model_name}/sample_{sample_number}/{layerwise_pruning_method}/rate_{layerwise_prune_rate}"
-    if not os.path.exists(base_path):
-        os.makedirs(base_path)
+    base_dir = f"pruned_result/{model_name}/sample_{sample_number}/{layerwise_pruning_method}/rate_{layerwise_prune_rate}"
+    if not os.path.exists(base_dir):
+        os.makedirs(base_dir)
 
     assert len(dataset_name_list) == 1
     dataset_name = None
@@ -512,10 +529,9 @@ def seer_pruning():
 
     dataset_path = f"{dataset_dir}/{dataset_name}"
     train_df = c4_calibration_generation(dataset_path, sample_number=sample_number)
-    pruner = PreTrainedMoEPruner(model, tokenizer, train_df, batch_size=batch_size, layerwise_pruning_method=layerwise_pruning_method,
-                                 cluster_number=cluster_number)
+    pruner = PreTrainedMoEPruner(model, tokenizer, train_df, batch_size=batch_size, layerwise_pruning_method=layerwise_pruning_method)
     pruner.forward()
-    seer_base_path = f"{base_path}/{dataset_name_list[0]}_prune.json"
+    seer_base_path = f"{base_dir}/{dataset_name_list[0]}_prune.json"
     if os.path.exists(seer_base_path):
         with open(seer_base_path, 'r') as f:
             pruner.unsupervised_map = json.load(f)
@@ -529,9 +545,9 @@ def seer_pruning():
 
 def hsic_pruning():
     print("HSIC Pruning...")
-    base_path = f"pruned_result/{model_name}/sample_{sample_number}/{layerwise_pruning_method}/rate_{layerwise_prune_rate}"
-    if not os.path.exists(base_path):
-        os.makedirs(base_path)
+    base_dir = f"pruned_result/{model_name}/sample_{sample_number}/{layerwise_pruning_method}/rate_{layerwise_prune_rate}"
+    if not os.path.exists(base_dir):
+        os.makedirs(base_dir)
 
     assert len(dataset_name_list) == 1
     dataset_name = None
@@ -543,10 +559,9 @@ def hsic_pruning():
 
     dataset_path = f"{dataset_dir}/{dataset_name}"
     train_df = c4_calibration_generation(dataset_path, sample_number=sample_number)
-    pruner = PreTrainedMoEPruner(model, tokenizer, train_df, batch_size=batch_size, layerwise_pruning_method=layerwise_pruning_method,
-                                 cluster_number=cluster_number)
+    pruner = PreTrainedMoEPruner(model, tokenizer, train_df, batch_size=batch_size, layerwise_pruning_method=layerwise_pruning_method)
     pruner.forward()
-    hsic_base_path = f"{base_path}/{dataset_name_list[0]}_prune.json"
+    hsic_base_path = f"{base_dir}/{dataset_name_list[0]}_prune.json"
     if os.path.exists(hsic_base_path):
         with open(hsic_base_path, 'r') as f:
             pruner.unsupervised_map = json.load(f)
@@ -565,11 +580,12 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_name_list", type=str, required=True, help="Dataset name list.")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size.")
     parser.add_argument("--sample_number", type=int, default=500, help="Number of samples.")
-    parser.add_argument("--cluster_number", type=int, default=6, help="Number of cluster.")
     parser.add_argument("--by_domain", type=int, default=1, help="By domain or mix")
     parser.add_argument("--layerwise_pruning_method", type=str, default="hierarchical_prune", help="Layerwise pruning method.")
-    parser.add_argument("--global_pruning_method", type=str, default="hierarchical_prune", help="Global pruning method.")
+    parser.add_argument("--layerwise_cluster_number", type=int, default=6, help="Layerwise number of cluster.")
     parser.add_argument("--layerwise_prune_rate", type=float, default=0.2, help="Layerwise pruning rate.")
+    parser.add_argument("--global_pruning_method", type=str, default="hierarchical_prune", help="Global pruning method.")
+    parser.add_argument("--global_cluster_number", type=int, default=6, help="Global number of cluster.")
     parser.add_argument("--global_prune_rate", type=float, default=0.1, help="Global pruning rate.")
     args = parser.parse_args()
 
@@ -578,12 +594,13 @@ if __name__ == "__main__":
     dataset_name_list = args.dataset_name_list.split(",")
     batch_size = args.batch_size
     sample_number = args.sample_number
-    cluster_number = args.cluster_number
     by_domain = args.by_domain
     layerwise_pruning_method = args.layerwise_pruning_method
-    global_pruning_method = args.global_pruning_method
+    layerwise_cluster_number = args.layerwise_cluster_number
     layerwise_prune_rate = args.layerwise_prune_rate
+    global_pruning_method = args.global_pruning_method
     global_prune_rate = args.global_prune_rate
+    global_cluster_number = args.global_cluster_number
 
     model_name = model_path.split("/")[-1]
 
