@@ -18,7 +18,7 @@ def domain_calibration_generation(dataset_dir, dataset_name, sample_number=50):
     train_dataset_map, valid_dataset_map = dataset_local_load(dataset_dir)
     train_dataset = train_dataset_map[dataset_name]
     train_df = pd.DataFrame(train_dataset)
-    train_df = train_df.sample(n=sample_number, random_state=42, axis=0)
+    train_df = train_df.sample(n=sample_number, random_state=random_state, axis=0)
     return train_df
 
 
@@ -28,7 +28,7 @@ def mix_calibration_generation(dataset_dir, dataset_name_list, sample_number=50)
     for dataset_name in dataset_name_list:
         train_dataset = train_dataset_map[dataset_name]
         train_df = pd.DataFrame(train_dataset)
-        train_df = train_df.sample(n=sample_number, random_state=1, axis=0)
+        train_df = train_df.sample(n=sample_number, random_state=random_state, axis=0)
         res_df = pd.concat([res_df, train_df])
     return res_df
 
@@ -36,7 +36,7 @@ def mix_calibration_generation(dataset_dir, dataset_name_list, sample_number=50)
 def c4_calibration_generation(dataset_path, sample_number=1000):
     dataset = load_dataset('json', data_files={'train': f'{dataset_path}'})
     df = pd.DataFrame(dataset["train"])[["text"]]
-    df = df.sample(n=sample_number, random_state=1, axis=0)
+    df = df.sample(n=sample_number, random_state=random_state, axis=0)
     return df
 
 
@@ -548,7 +548,6 @@ def agnostic_pruning():
 
 
 def seer_pruning():
-    print("Seer Pruning...")
     base_dir = f"pruned_result/{model_name}/sample_{sample_number}"
     if not os.path.exists(base_dir):
         os.makedirs(base_dir)
@@ -581,7 +580,6 @@ def seer_pruning():
 
 
 def hsic_pruning():
-    print("HSIC Pruning...")
     base_dir = f"pruned_result/{model_name}/sample_{sample_number}"
     if not os.path.exists(base_dir):
         os.makedirs(base_dir)
@@ -597,6 +595,7 @@ def hsic_pruning():
     dataset_path = f"{dataset_dir}/{dataset_path_name}"
     train_df = c4_calibration_generation(dataset_path, sample_number=sample_number)
     pruner = PreTrainedMoEPruner(model, tokenizer, train_df, batch_size=batch_size, layerwise_pruning_method=layerwise_pruning_method)
+    pruner.forward()
 
     expert_output_save_dir = f"{base_dir}/{dataset_name_list[0]}_expert_output_hidden"
     expert_output_judge(pruner, expert_output_save_dir)
@@ -624,6 +623,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size.")
     parser.add_argument("--sample_number", type=int, default=1000, help="Number of samples.")
     parser.add_argument("--by_domain", type=int, default=1, help="By domain or mix")
+    parser.add_argument("--random_state", type=int, default=42, help="By domain or mix")
     parser.add_argument("--layerwise_pruning_method", type=str, default=None, help="Layerwise pruning method.")
     parser.add_argument("--layerwise_cluster_number", type=int, default=12, help="Layerwise number of cluster.")
     parser.add_argument("--layerwise_prune_rate", type=float, default=0.0, help="Layerwise pruning rate.")
@@ -638,6 +638,7 @@ if __name__ == "__main__":
     batch_size = args.batch_size
     sample_number = args.sample_number
     by_domain = args.by_domain
+    random_state = args.random_state
     layerwise_pruning_method = args.layerwise_pruning_method
     layerwise_cluster_number = args.layerwise_cluster_number
     layerwise_prune_rate = args.layerwise_prune_rate
