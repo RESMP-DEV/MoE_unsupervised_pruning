@@ -317,8 +317,8 @@ class PreTrainedMoEPruner:
                 continue
 
             assert not set(global_prune_list) & set(layerwise_prune_list)
-            max_prune_number = int(len(layerwise_prune_list) // (1 - layerwise_prune_rate) * 0.9)
-            if len(global_prune_list) + len(layerwise_prune_list) < max_prune_number:
+            max_prune_number = int(len(layerwise_prune_list) // layerwise_prune_rate * 0.9)
+            if len(global_prune_list) + len(layerwise_prune_list) > max_prune_number:
                 # This logic is quite simple and may need optimize
                 print(f"#### Layer {layer_idx} global prune so many experts, which is {len(global_prune_list)}. Will only prune {max_prune_number} experts. ####")
                 global_prune_list = global_prune_list[:max_prune_number]

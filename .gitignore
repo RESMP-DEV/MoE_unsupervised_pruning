@@ -1,7 +1,7 @@
 __pycache__/
 dataset/
 result/
-pruned_result/
+pruned_result/DeepSeek-V2-Lite/sample_1000/MathInstruct_expert_output_hidden/
 .idea/
 *.log
 *.ipynb
