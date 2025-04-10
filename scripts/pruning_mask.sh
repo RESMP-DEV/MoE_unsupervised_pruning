@@ -15,14 +15,14 @@ layerwise_pruning_method="hierarchical_prune"
 #layerwise_pruning_method="hierarchical_prune_with_entropy"
 #layerwise_pruning_method="seer_prune"
 #layerwise_pruning_method="hsic_prune"
-layerwise_cluster_number=10 # only available when using uns method
+layerwise_cluster_number=12 # only available when using uns method
 layerwise_prune_rate=0.1
 
-use_global_pruning=0
+use_global_pruning=1
 #global_pruning_method="kmeans_prune"
 global_pruning_method="hierarchical_prune"
-global_cluster_number=12 # only available when using uns method
-global_prune_rate=0.2
+global_cluster_number=6 # only available when using uns method
+global_prune_rate=0.1
 
 args=(
     --model_path "$model_path"
