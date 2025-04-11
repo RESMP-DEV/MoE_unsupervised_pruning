@@ -25,11 +25,11 @@ To prune the DeepseekV2Lite model with the suggested parameters, you can run the
 
 ## Citation
 ```
-  @unpublished{
+  @article{guo2025arxiv,
   title={Cluster-Driven Expert Pruning for Mixture-of-Experts Large Language Models},
   author={Hongcheng Guo, Juntao Yao, Boyang Wang, Junjia Du, Shaosheng Cao, Donglin Di, Shun Zhang, Zhoujun Li},
-  note={Under review at ACL},
-  url={https://openreview.net/pdf?id=FnSd5Nf3TL},
-  year={2025}
+  journal={arXiv preprint arXiv:2504.07807},
+  year={2025},
+  url={https://arxiv.org/abs/2504.07807}
   }
 ```
